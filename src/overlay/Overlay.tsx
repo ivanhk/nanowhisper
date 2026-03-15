@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
 
 type OverlayState = "recording" | "transcribing";
 
@@ -16,6 +16,14 @@ function Overlay() {
   const historyRef = useRef<number[]>([]);
   const frameCountRef = useRef(0);
   const animRef = useRef<number>(0);
+  const dragRef = useRef<{
+    pointerId: number;
+    scaleFactor: number;
+    startMouseX: number;
+    startMouseY: number;
+    startWindowX: number;
+    startWindowY: number;
+  } | null>(null);
 
   useEffect(() => {
     const unlisten1 = listen<number>("audio-level", (e) => {
@@ -81,19 +89,56 @@ function Overlay() {
     return () => cancelAnimationFrame(animRef.current);
   }, [state]);
 
-  // Drag support — now works because transparent(true) is removed
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (e.buttons === 1) {
-        getCurrentWindow().startDragging();
-      }
+  const handlePointerDown = async (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+
+    const currentWindow = getCurrentWindow();
+    const [position, scaleFactor] = await Promise.all([
+      currentWindow.outerPosition(),
+      currentWindow.scaleFactor(),
+    ]);
+
+    dragRef.current = {
+      pointerId: e.pointerId,
+      scaleFactor,
+      startMouseX: e.screenX,
+      startMouseY: e.screenY,
+      startWindowX: position.x,
+      startWindowY: position.y,
     };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+
+    const nextX = Math.round(
+      drag.startWindowX + (e.screenX - drag.startMouseX) * drag.scaleFactor,
+    );
+    const nextY = Math.round(
+      drag.startWindowY + (e.screenY - drag.startMouseY) * drag.scaleFactor,
+    );
+
+    void getCurrentWindow().setPosition(new PhysicalPosition(nextX, nextY));
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (dragRef.current?.pointerId !== e.pointerId) return;
+    dragRef.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  };
 
   return (
-    <div className="overlay-body">
+    <div
+      className="overlay-body"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+    >
       <canvas
         ref={canvasRef}
         className="wave-canvas"

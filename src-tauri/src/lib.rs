@@ -1,6 +1,7 @@
 mod commands;
 mod history;
 pub mod paste;
+mod permissions;
 mod recorder;
 mod settings;
 mod transcribe;
@@ -11,7 +12,7 @@ use settings::AppSettings;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -62,24 +63,25 @@ pub fn run() {
                 }
             }
 
-
             // Create main window
-            let _main_window = tauri::WebviewWindowBuilder::new(
-                app,
-                "main",
-                tauri::WebviewUrl::App("/".into()),
-            )
-            .title("NanoWhisper")
-            .inner_size(420.0, 600.0)
-            .min_inner_size(380.0, 400.0)
-            .resizable(true)
-            .maximizable(false)
-            .visible(false)
-            .build()?;
+            let _main_window =
+                tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("/".into()))
+                    .title("NanoWhisper")
+                    .inner_size(420.0, 600.0)
+                    .min_inner_size(380.0, 400.0)
+                    .resizable(true)
+                    .maximizable(false)
+                    .visible(false)
+                    .build()?;
 
             // System tray
-            let show_i =
-                tauri::menu::MenuItem::with_id(app, "show", "Show NanoWhisper", true, None::<&str>)?;
+            let show_i = tauri::menu::MenuItem::with_id(
+                app,
+                "show",
+                "Show NanoWhisper",
+                true,
+                None::<&str>,
+            )?;
             let quit_i = tauri::menu::MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
             let menu = tauri::menu::Menu::with_items(app, &[&show_i, &separator, &quit_i])?;
@@ -112,7 +114,10 @@ pub fn run() {
             }
 
             println!("[NanoWhisper] App started. Shortcut: {}", settings.shortcut);
-            println!("[NanoWhisper] API key configured: {}", !settings.api_key.is_empty());
+            println!(
+                "[NanoWhisper] API key configured: {}",
+                !settings.api_key.is_empty()
+            );
 
             Ok(())
         })
@@ -135,7 +140,9 @@ pub fn run() {
                 }
             }
             #[cfg(not(target_os = "macos"))]
-            { let _ = (&app, &event); }
+            {
+                let _ = (&app, &event);
+            }
         });
 }
 
@@ -154,48 +161,53 @@ fn register_shortcut(app_handle: &tauri::AppHandle, settings: &AppSettings) {
     };
 
     let handle = app_handle.clone();
-    let _ = app_handle.global_shortcut().on_shortcut(shortcut, move |_app, _shortcut, event| {
-        if event.state == ShortcutState::Pressed {
-            // Debounce: ignore duplicate events within 500ms
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64;
-            let last = LAST_SHORTCUT_TIME.load(Ordering::SeqCst);
-            if now - last < DEBOUNCE_MS {
-                return;
-            }
-            LAST_SHORTCUT_TIME.store(now, Ordering::SeqCst);
+    let _ = app_handle
+        .global_shortcut()
+        .on_shortcut(shortcut, move |_app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                // Debounce: ignore duplicate events within 500ms
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+                let last = LAST_SHORTCUT_TIME.load(Ordering::SeqCst);
+                if now - last < DEBOUNCE_MS {
+                    return;
+                }
+                LAST_SHORTCUT_TIME.store(now, Ordering::SeqCst);
 
-            // CAS guard: prevent concurrent toggle
-            if SHORTCUT_PROCESSING.compare_exchange(
-                false, true, Ordering::SeqCst, Ordering::SeqCst
-            ).is_err() {
-                return;
-            }
+                // CAS guard: prevent concurrent toggle
+                if SHORTCUT_PROCESSING
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+                {
+                    return;
+                }
 
-            println!("[NanoWhisper] Shortcut triggered");
-            let h = handle.clone();
-            std::thread::spawn(move || {
-                toggle_recording(&h);
-                SHORTCUT_PROCESSING.store(false, Ordering::SeqCst);
-            });
-        }
-    });
+                println!("[NanoWhisper] Shortcut triggered");
+                let h = handle.clone();
+                std::thread::spawn(move || {
+                    toggle_recording(&h);
+                    SHORTCUT_PROCESSING.store(false, Ordering::SeqCst);
+                });
+            }
+        });
 }
 
 fn register_escape(app_handle: &tauri::AppHandle) {
     let escape: Shortcut = "Escape".parse().unwrap();
     let handle = app_handle.clone();
-    let _ = app_handle.global_shortcut().on_shortcut(escape, move |_app, _shortcut, event| {
-        if event.state != ShortcutState::Released {
-            println!("[NanoWhisper] Escape triggered");
-            let h = handle.clone();
-            std::thread::spawn(move || {
-                cancel_recording(&h);
-            });
-        }
-    });
+    let _ = app_handle
+        .global_shortcut()
+        .on_shortcut(escape, move |_app, _shortcut, event| {
+            if event.state != ShortcutState::Released {
+                println!("[NanoWhisper] Escape triggered");
+                let h = handle.clone();
+                std::thread::spawn(move || {
+                    cancel_recording(&h);
+                });
+            }
+        });
 }
 
 fn unregister_escape(app_handle: &tauri::AppHandle) {
@@ -249,6 +261,8 @@ fn start_recording(app_handle: &tauri::AppHandle) {
     .decorations(false)
     .always_on_top(true)
     .skip_taskbar(true)
+    .focused(false)
+    .accept_first_mouse(true)
     .build()
     {
         Ok(_) => {
@@ -287,7 +301,11 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
             return;
         }
     };
-    println!("[NanoWhisper] Got {} samples at {}Hz", audio.samples.len(), audio.sample_rate);
+    println!(
+        "[NanoWhisper] Got {} samples at {}Hz",
+        audio.samples.len(),
+        audio.sample_rate
+    );
 
     let sample_count = audio.samples.len();
     let sample_rate = audio.sample_rate;
@@ -346,6 +364,10 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
 
                 // Copy to clipboard and auto-paste into active app
                 let _ = handle.clipboard().write_text(&text);
+                // Closing the overlay first lets the previously active app
+                // retake focus before we synthesize the paste shortcut.
+                close_overlay(&handle);
+                std::thread::sleep(Duration::from_millis(180));
                 if let Err(e) = paste::simulate_paste(&handle) {
                     eprintln!("[NanoWhisper] Paste failed: {}", e);
                 }

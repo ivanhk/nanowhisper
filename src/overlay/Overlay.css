@@ -14,8 +14,16 @@ html, body {
   width: 100%;
   height: 100%;
   background: #1c1c1e;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .wave-canvas {
   display: block;
+  pointer-events: none;
+}
+
+.overlay-body:active {
+  cursor: grabbing;
 }

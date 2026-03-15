@@ -55,11 +55,32 @@ function App() {
   }, []);
 
   const checkPermissions = useCallback(async () => {
-    const mic = await invoke<boolean>("check_microphone");
+    const [mic, acc] = await Promise.all([
+      invoke<boolean>("check_microphone"),
+      invoke<boolean>("check_accessibility"),
+    ]);
     setMicrophoneOk(mic);
-    const acc = await invoke<boolean>("check_accessibility");
     setAccessibilityOk(acc);
   }, []);
+
+  const waitForPermission = useCallback(
+    async (
+      command: "check_microphone" | "check_accessibility",
+      setter: (value: boolean) => void,
+      attempts = 15,
+    ) => {
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        const ok = await invoke<boolean>(command);
+        setter(ok);
+        if (ok) return true;
+        if (attempt < attempts - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+      return false;
+    },
+    [],
+  );
 
   useEffect(() => {
     loadHistory();
@@ -70,6 +91,23 @@ function App() {
     const permInterval = setInterval(checkPermissions, 2000);
     return () => { unlisten.then((f) => f()); clearInterval(permInterval); };
   }, [loadHistory, loadSettings, checkPermissions]);
+
+  useEffect(() => {
+    if (!accessibilityOk) return;
+    invoke("initialize_enigo").catch((error) => {
+      console.error("Failed to initialize auto-paste:", error);
+    });
+  }, [accessibilityOk]);
+
+  const handleEnableMicrophone = useCallback(async () => {
+    await invoke("request_microphone");
+    await waitForPermission("check_microphone", setMicrophoneOk);
+  }, [waitForPermission]);
+
+  const handleEnableAccessibility = useCallback(async () => {
+    await invoke("request_accessibility");
+    await waitForPermission("check_accessibility", setAccessibilityOk);
+  }, [waitForPermission]);
 
   const copyText = async (text: string, id: number) => {
     await writeText(text);
@@ -199,11 +237,7 @@ function App() {
               <div className="px-3 py-2 rounded-lg text-sm" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "#34c759" }}>Enabled</div>
             ) : (
               <button
-                onClick={async () => {
-                  await invoke("request_microphone");
-                  const ok = await invoke<boolean>("check_microphone");
-                  setMicrophoneOk(ok);
-                }}
+                onClick={handleEnableMicrophone}
                 className="w-full px-3 py-2 rounded-lg text-sm font-medium"
                 style={{ background: "var(--accent)", color: "white" }}
               >
@@ -225,9 +259,7 @@ function App() {
               <div className="px-3 py-2 rounded-lg text-sm" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "#34c759" }}>Enabled</div>
             ) : (
               <button
-                onClick={async () => {
-                  await invoke("request_accessibility");
-                }}
+                onClick={handleEnableAccessibility}
                 className="w-full px-3 py-2 rounded-lg text-sm font-medium"
                 style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
               >
@@ -251,7 +283,6 @@ function App() {
         <button
           onClick={() => {
             saveSettings();
-            if (accessibilityOk) invoke("initialize_enigo");
             setView("history");
           }}
           disabled={!canProceed}
@@ -307,11 +338,25 @@ function App() {
             <ShortcutInput />
           </div>
           <div>
+            <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Microphone</label>
+            {microphoneOk ? (
+              <div className="px-3 py-2 rounded-lg text-sm" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "#34c759" }}>Enabled</div>
+            ) : (
+              <button
+                onClick={handleEnableMicrophone}
+                className="w-full px-3 py-2 rounded-lg text-sm font-medium"
+                style={{ background: "var(--accent)", color: "white" }}
+              >
+                Enable Microphone
+              </button>
+            )}
+          </div>
+          <div>
             <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Accessibility</label>
             {accessibilityOk ? (
               <div className="px-3 py-2 rounded-lg text-sm" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "#34c759" }}>Enabled</div>
             ) : (
-              <button onClick={async () => { await invoke("request_accessibility"); setTimeout(async () => { const ok = await invoke<boolean>("check_accessibility"); if (ok) { setAccessibilityOk(true); await invoke("initialize_enigo"); } }, 2000); }} className="w-full px-3 py-2 rounded-lg text-sm font-medium" style={{ background: "var(--accent)", color: "white" }}>
+              <button onClick={handleEnableAccessibility} className="w-full px-3 py-2 rounded-lg text-sm font-medium" style={{ background: "var(--accent)", color: "white" }}>
                 Open System Settings
               </button>
             )}

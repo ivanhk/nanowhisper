@@ -1,4 +1,4 @@
-use enigo::{Enigo, Key, Keyboard, Settings, Direction};
+use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
@@ -72,7 +72,9 @@ pub fn simulate_paste(app_handle: &AppHandle) -> Result<(), String> {
     let enigo_state = app_handle
         .try_state::<EnigoState>()
         .ok_or("Enigo not initialized")?;
-    let mut enigo = enigo_state.0.lock()
+    let mut enigo = enigo_state
+        .0
+        .lock()
         .map_err(|e| format!("Failed to lock Enigo: {}", e))?;
 
     std::thread::sleep(std::time::Duration::from_millis(80));
@@ -86,12 +88,15 @@ pub fn simulate_paste(app_handle: &AppHandle) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     let (modifier, v_key) = (Key::Control, Key::Unicode('v'));
 
-    enigo.key(modifier, Direction::Press)
+    enigo
+        .key(modifier, Direction::Press)
         .map_err(|e| format!("Failed to press modifier: {}", e))?;
-    enigo.key(v_key, Direction::Click)
+    enigo
+        .key(v_key, Direction::Click)
         .map_err(|e| format!("Failed to click V: {}", e))?;
     std::thread::sleep(std::time::Duration::from_millis(100));
-    enigo.key(modifier, Direction::Release)
+    enigo
+        .key(modifier, Direction::Release)
         .map_err(|e| format!("Failed to release modifier: {}", e))?;
 
     println!("[NanoWhisper] Paste simulated");

@@ -11,7 +11,10 @@ pub fn get_history(history: State<'_, Arc<HistoryManager>>) -> Result<Vec<Histor
 }
 
 #[tauri::command]
-pub fn delete_history_entry(history: State<'_, Arc<HistoryManager>>, id: i64) -> Result<(), String> {
+pub fn delete_history_entry(
+    history: State<'_, Arc<HistoryManager>>,
+    id: i64,
+) -> Result<(), String> {
     history.delete_entry(id).map_err(|e| e.to_string())
 }
 
@@ -42,42 +45,19 @@ pub fn request_accessibility() -> bool {
 
 #[tauri::command]
 pub fn check_microphone() -> bool {
-    // Try to open default input device — if permission denied, returns false
-    use cpal::traits::{HostTrait, DeviceTrait};
-    let host = cpal::default_host();
-    if let Some(device) = host.default_input_device() {
-        device.default_input_config().is_ok()
-    } else {
-        false
-    }
+    crate::permissions::check_microphone_permission()
 }
 
 #[tauri::command]
 pub fn request_microphone() -> bool {
-    // On macOS, opening a cpal stream triggers the permission dialog
-    use cpal::traits::{HostTrait, DeviceTrait, StreamTrait};
-    let host = cpal::default_host();
-    if let Some(device) = host.default_input_device() {
-        if let Ok(config) = device.default_input_config() {
-            let stream = device.build_input_stream(
-                &config.into(),
-                |_data: &[f32], _: &cpal::InputCallbackInfo| {},
-                |_err| {},
-                None,
-            );
-            if let Ok(s) = stream {
-                let _ = s.play();
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                drop(s);
-                return true;
-            }
-        }
-    }
-    false
+    crate::permissions::request_microphone_permission()
 }
 
 #[tauri::command]
 pub fn initialize_enigo(app: AppHandle) -> Result<(), String> {
+    if !crate::paste::is_accessibility_trusted() {
+        return Err("Accessibility not granted".into());
+    }
     if app.try_state::<EnigoState>().is_some() {
         return Ok(());
     }
@@ -96,9 +76,13 @@ pub async fn retry_transcription(
 
     // Get the entry to find audio_path
     let entries = history.get_entries().map_err(|e| e.to_string())?;
-    let entry = entries.iter().find(|e| e.id == id)
+    let entry = entries
+        .iter()
+        .find(|e| e.id == id)
         .ok_or("Entry not found")?;
-    let audio_path = entry.audio_path.as_ref()
+    let audio_path = entry
+        .audio_path
+        .as_ref()
         .ok_or("No audio file for this entry")?;
 
     // Read WAV file
@@ -109,7 +93,11 @@ pub async fn retry_transcription(
         return Err("API key not configured".into());
     }
 
-    let lang = if settings.language == "auto" { None } else { Some(settings.language.as_str()) };
+    let lang = if settings.language == "auto" {
+        None
+    } else {
+        Some(settings.language.as_str())
+    };
     let text = transcribe::transcribe_audio(&settings.api_key, &settings.model, wav_data, lang)
         .await
         .map_err(|e| e.to_string())?;
@@ -117,7 +105,8 @@ pub async fn retry_transcription(
     // Update history entry — delete old, add new with same audio
     history.delete_entry(id).map_err(|e| e.to_string())?;
     let duration_ms = entry.duration_ms;
-    history.add_entry(&text, &settings.model, duration_ms, Some(audio_path))
+    history
+        .add_entry(&text, &settings.model, duration_ms, Some(audio_path))
         .map_err(|e| e.to_string())?;
 
     // Copy + paste

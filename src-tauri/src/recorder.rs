@@ -72,10 +72,18 @@ impl AudioRecorder {
             let (audio_tx, audio_rx) = mpsc::channel::<Vec<f32>>();
 
             let stream = match config.sample_format() {
-                SampleFormat::F32 => build_stream::<f32>(&device, &config.into(), audio_tx, channels),
-                SampleFormat::I16 => build_stream::<i16>(&device, &config.into(), audio_tx, channels),
-                SampleFormat::I32 => build_stream::<i32>(&device, &config.into(), audio_tx, channels),
-                SampleFormat::U16 => build_stream::<u16>(&device, &config.into(), audio_tx, channels),
+                SampleFormat::F32 => {
+                    build_stream::<f32>(&device, &config.into(), audio_tx, channels)
+                }
+                SampleFormat::I16 => {
+                    build_stream::<i16>(&device, &config.into(), audio_tx, channels)
+                }
+                SampleFormat::I32 => {
+                    build_stream::<i32>(&device, &config.into(), audio_tx, channels)
+                }
+                SampleFormat::U16 => {
+                    build_stream::<u16>(&device, &config.into(), audio_tx, channels)
+                }
                 _ => {
                     log::error!("Unsupported sample format");
                     *is_recording.lock().unwrap() = false;
@@ -105,8 +113,7 @@ impl AudioRecorder {
 
                     if buffer.len() % 512 < chunk.len() {
                         let recent = &buffer[buffer.len().saturating_sub(512)..];
-                        let rms = (recent.iter().map(|s| s * s).sum::<f32>()
-                            / recent.len() as f32)
+                        let rms = (recent.iter().map(|s| s * s).sum::<f32>() / recent.len() as f32)
                             .sqrt();
                         let _ = app_handle.emit("audio-level", rms.min(1.0));
                     }
