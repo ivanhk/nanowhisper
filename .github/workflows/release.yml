@@ -1,0 +1,210 @@
+# Build and release NanoWhisper for all supported platforms.
+#
+# Trigger: push a version tag (e.g., git tag v0.1.0 && git push --tags)
+#
+# Runner matrix:
+#   macOS ARM64  → macos-latest  (Apple Silicon, native)
+#   macOS x64    → macos-latest  (Apple Silicon, cross-compiled via --target)
+#   Linux x64    → ubuntu-22.04
+#   Windows x64  → windows-latest
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# Prevent concurrent releases
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: release-mac-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: release-mac-x64
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact: release-linux-x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: release-win-x64
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.artifact }})
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      # Linux: install system dependencies required by Tauri and cpal (ALSA)
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libasound2-dev \
+            rpm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build Tauri app
+        run: npx tauri build --target ${{ matrix.target }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.rpm
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
+          if-no-files-found: error
+          retention-days: 3
+
+  # ── Create GitHub Release ─────────────────────────────────────
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # Flatten nested bundle directory structure into a single folder
+      - name: Collect release files
+        run: |
+          mkdir -p release
+          find artifacts -type f \( \
+            -name "*.dmg" -o \
+            -name "*.exe" -o \
+            -name "*.msi" -o \
+            -name "*.deb" -o \
+            -name "*.rpm" -o \
+            -name "*.AppImage" \
+          \) -exec cp {} release/ \;
+          echo "Release files:"
+          ls -lh release/
+
+      - name: Generate checksums
+        run: |
+          cd release
+          sha256sum * > SHA256SUMS.txt
+          echo "Generated checksums:"
+          cat SHA256SUMS.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: NanoWhisper ${{ github.ref_name }}
+          draft: false
+          generate_release_notes: true
+          files: release/*
+          body: |
+            ## NanoWhisper ${{ github.ref_name }}
+
+            ### Downloads
+
+            #### macOS
+
+            | File | Architecture | Note |
+            |------|-------------|------|
+            | `.dmg` (arm64) | Apple Silicon (M1/M2/M3/M4) | **Recommended** — most Mac users |
+            | `.dmg` (x64) | Intel | For pre-2021 Macs |
+
+            #### Windows
+
+            | File | Note |
+            |------|------|
+            | `.exe` (NSIS installer) | **Recommended** — for most users |
+            | `.msi` (Windows Installer) | For enterprise / IT deployment |
+
+            #### Linux
+
+            | File | Distros | Note |
+            |------|---------|------|
+            | `.deb` | Ubuntu, Debian, Mint | **Recommended** |
+            | `.rpm` | Fedora, RHEL, CentOS, openSUSE | |
+            | `.AppImage` | Universal | Portable, no installation needed |
+
+            > **Not sure which to pick?** Choose the **Recommended** option.
+
+            ---
+
+            ### ⚠️ Installation Notes
+
+            **macOS (unsigned):** The app is not signed with an Apple Developer certificate. macOS will block it by default. To install, run:
+            ```bash
+            xattr -cr /Applications/NanoWhisper.app
+            ```
+
+            **Windows (unsigned):** The app is not code-signed. Windows SmartScreen will show a warning when you first run it. Click **"More info"** → **"Run anyway"** to proceed.
+
+            **Linux:**
+            ```bash
+            # Debian / Ubuntu / Mint
+            sudo dpkg -i NanoWhisper_*.deb
+
+            # Fedora / RHEL
+            sudo dnf install NanoWhisper-*.rpm
+
+            # AppImage (portable)
+            chmod +x NanoWhisper_*.AppImage
+            ./NanoWhisper_*.AppImage
+            ```
+
+            ### Verify Downloads
+
+            Download `SHA256SUMS.txt` and verify:
+            ```bash
+            sha256sum -c SHA256SUMS.txt
+            ```
+
+      # Clean up temporary build artifacts to free storage quota
+      - name: Delete temporary build artifacts
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: release-*
