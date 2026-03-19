@@ -135,6 +135,8 @@ function App() {
   const [microphoneOk, setMicrophoneOk] = useState(false);
   const [accessibilityOk, setAccessibilityOk] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [apiKeyStatus, setApiKeyStatus] = useState<"untested" | "testing" | "ok" | "error">("untested");
+  const [apiKeyError, setApiKeyError] = useState<string | null>(null);
 
   const loadHistory = useCallback(async () => {
     const entries = await invoke<HistoryEntry[]>("get_history");
@@ -241,6 +243,19 @@ function App() {
     await invoke("save_settings", { settings });
   };
 
+  const testApiKey = async (key: string) => {
+    if (!key) return;
+    setApiKeyStatus("testing");
+    setApiKeyError(null);
+    try {
+      await invoke("validate_api_key", { apiKey: key });
+      setApiKeyStatus("ok");
+    } catch (e) {
+      setApiKeyStatus("error");
+      setApiKeyError(String(e));
+    }
+  };
+
   const formatTime = (ts: number) => {
     const d = new Date(ts * 1000);
     const now = new Date();
@@ -277,7 +292,7 @@ function App() {
 
   // Onboarding
   if (view === "onboarding" && settings) {
-    const canProceed = settings.api_key && microphoneOk && (isMac ? accessibilityOk : true);
+    const canProceed = apiKeyStatus === "ok" && microphoneOk && (isMac ? accessibilityOk : true);
     return (
       <div className="p-6 max-w-md mx-auto">
         <div className="flex flex-col items-center mb-6">
@@ -294,16 +309,36 @@ function App() {
             <div className="flex items-center gap-2 mb-2">
               <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ background: "var(--accent)", color: "white" }}>1</span>
               <span className="text-sm font-medium">OpenAI API Key</span>
-              {settings.api_key && <span style={{ color: "#34c759" }}>&#10003;</span>}
+              {apiKeyStatus === "ok" && <span style={{ color: "#34c759" }}>&#10003;</span>}
             </div>
             <input
               type="password"
               value={settings.api_key}
-              onChange={(e) => setSettings({ ...settings, api_key: e.target.value })}
+              onChange={(e) => {
+                setSettings({ ...settings, api_key: e.target.value });
+                setApiKeyStatus("untested");
+                setApiKeyError(null);
+              }}
               placeholder="sk-proj-..."
               className="w-full px-3 py-2 rounded-lg text-sm outline-none"
               style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
             />
+            <button
+              onClick={() => testApiKey(settings.api_key)}
+              disabled={!settings.api_key || apiKeyStatus === "testing"}
+              className="w-full mt-2 px-3 py-2 rounded-lg text-sm font-medium"
+              style={{
+                background: apiKeyStatus === "ok" ? "#34c75920" : "var(--accent)",
+                color: apiKeyStatus === "ok" ? "#34c759" : "white",
+                cursor: !settings.api_key || apiKeyStatus === "testing" ? "not-allowed" : "pointer",
+                opacity: !settings.api_key || apiKeyStatus === "testing" ? 0.5 : 1,
+              }}
+            >
+              {apiKeyStatus === "testing" ? "Testing..." : apiKeyStatus === "ok" ? "Connected" : "Test Connection"}
+            </button>
+            {apiKeyStatus === "error" && apiKeyError && (
+              <p className="text-xs mt-1" style={{ color: "#ff453a" }}>{apiKeyError}</p>
+            )}
           </div>
 
           {/* Step 2: Microphone (required) */}
@@ -392,7 +427,27 @@ function App() {
         <div className="space-y-4">
           <div>
             <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>API Key</label>
-            <input type="password" value={settings.api_key} onChange={(e) => setSettings({ ...settings, api_key: e.target.value })} placeholder="sk-..." className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
+            <input type="password" value={settings.api_key} onChange={(e) => {
+              setSettings({ ...settings, api_key: e.target.value });
+              setApiKeyStatus("untested");
+              setApiKeyError(null);
+            }} placeholder="sk-..." className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
+            <button
+              onClick={() => testApiKey(settings.api_key)}
+              disabled={!settings.api_key || apiKeyStatus === "testing"}
+              className="w-full mt-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
+              style={{
+                background: apiKeyStatus === "ok" ? "#34c75920" : "var(--border)",
+                color: apiKeyStatus === "ok" ? "#34c759" : "var(--text)",
+                cursor: !settings.api_key || apiKeyStatus === "testing" ? "not-allowed" : "pointer",
+                opacity: !settings.api_key || apiKeyStatus === "testing" ? 0.5 : 1,
+              }}
+            >
+              {apiKeyStatus === "testing" ? "Testing..." : apiKeyStatus === "ok" ? "Connected" : "Test Connection"}
+            </button>
+            {apiKeyStatus === "error" && apiKeyError && (
+              <p className="text-xs mt-1" style={{ color: "#ff453a" }}>{apiKeyError}</p>
+            )}
           </div>
           <div>
             <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Model</label>

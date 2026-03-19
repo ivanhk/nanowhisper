@@ -61,6 +61,16 @@ pub fn request_microphone() -> bool {
 }
 
 #[tauri::command]
+pub async fn validate_api_key(app: AppHandle, api_key: String) -> Result<(), String> {
+    let client = app
+        .try_state::<reqwest::Client>()
+        .ok_or("HTTP client not initialized")?;
+    crate::transcribe::validate_api_key(&client, &api_key)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn pause_shortcut(app: AppHandle) {
     crate::hotkey::pause();
     let settings = settings::get_settings();

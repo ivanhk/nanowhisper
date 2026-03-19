@@ -50,6 +50,7 @@ pub fn run() {
             commands::check_microphone,
             commands::request_microphone,
             commands::initialize_enigo,
+            commands::validate_api_key,
             commands::retry_transcription,
             commands::save_overlay_position,
             commands::pause_shortcut,
@@ -82,7 +83,7 @@ pub fn run() {
             let _main_window =
                 tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("/".into()))
                     .title("NanoWhisper")
-                    .inner_size(420.0, 600.0)
+                    .inner_size(420.0, 680.0)
                     .min_inner_size(380.0, 400.0)
                     .resizable(true)
                     .maximizable(false)
