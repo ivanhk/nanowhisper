@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "sync-version": "node -e \"const v=require('./package.json').version; const fs=require('fs'); let c=fs.readFileSync('src-tauri/Cargo.toml','utf8'); c=c.replace(/^version = \\\".*\\\"/m,'version = \\\"'+v+'\\\"'); fs.writeFileSync('src-tauri/Cargo.toml',c); let t=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8')); t.version=v; fs.writeFileSync('src-tauri/tauri.conf.json',JSON.stringify(t,null,2)+'\\n'); console.log('Synced version:',v)\""
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.0",
