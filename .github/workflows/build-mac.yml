@@ -38,6 +38,16 @@ jobs:
           workspaces: src-tauri
           key: aarch64-apple-darwin
 
+      # Install npm deps BEFORE importing signing credentials
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Apple intermediate certificate
+        run: |
+          curl -sO https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          sudo security import DeveloperIDG2CA.cer -k /Library/Keychains/System.keychain -T /usr/bin/codesign 2>&1 || echo "(already installed, skipping)"
+          echo "Apple Developer ID G2 intermediate certificate ready"
+
       - name: Import macOS signing certificate
         env:
           APPLE_CERTIFICATE: ${{ secrets.MAC_CSC_LINK }}
@@ -60,9 +70,6 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
           rm "$CERTIFICATE_PATH"
-
-      - name: Install dependencies
-        run: npm install
 
       - name: Build Tauri app (signed + notarized)
         env:

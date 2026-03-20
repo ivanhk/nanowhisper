@@ -38,11 +38,24 @@ jobs:
           workspaces: src-tauri
           key: x86_64-pc-windows-msvc
 
-      - name: Setup code signing
-        run: cargo install trusted-signing-cli
-
       - name: Install dependencies
         run: npm install
+
+      - name: Setup code signing
+        shell: pwsh
+        run: |
+          cargo install trusted-signing-cli
+          # Ensure cargo bin is in PATH for Tauri's subprocess
+          $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
+          echo $cargoBin >> $env:GITHUB_PATH
+          # Verify installation
+          $cli = Join-Path $cargoBin "trusted-signing-cli.exe"
+          if (-not (Test-Path $cli)) {
+            Write-Error "trusted-signing-cli not found at $cli"
+            Get-ChildItem $cargoBin
+            exit 1
+          }
+          & $cli --version
 
       - name: Build Tauri app (signed)
         env:
@@ -51,29 +64,39 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         shell: pwsh
         run: |
-          $signConfig = @'
+          # Resolve full path to avoid PATH lookup issues in Tauri subprocess
+          $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
+          $cli = (Join-Path $cargoBin "trusted-signing-cli.exe") -replace '\\', '/'
+          $signConfig = @"
           {
             "bundle": {
               "windows": {
-                "signCommand": "trusted-signing-cli -e https://eus.codesigning.azure.net -a nanowhisper -c nanowhisper -d NanoWhisper %1"
+                "signCommand": "$cli -e https://eus.codesigning.azure.net -a golemancy -c golemancy -d NanoWhisper %1"
               }
             }
           }
-          '@
+          "@
           $configPath = Join-Path $env:RUNNER_TEMP "tauri-sign.json"
           [System.IO.File]::WriteAllText($configPath, $signConfig.Trim(), [System.Text.UTF8Encoding]::new($false))
+          Write-Host "Sign config:" ; Get-Content $configPath
           npx tauri build --target x86_64-pc-windows-msvc --config $configPath
 
       - name: Verify code signing
         shell: pwsh
         run: |
+          $allValid = $true
           $files = Get-ChildItem "src-tauri/target/x86_64-pc-windows-msvc/release/bundle" -Recurse -Include *.exe,*.msi
           foreach ($file in $files) {
             Write-Host "Verifying: $($file.FullName)"
             $sig = Get-AuthenticodeSignature $file.FullName
             Write-Host "  Status: $($sig.Status)"
             Write-Host "  Signer: $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne 'Valid') {
+              Write-Host "::error::Signature invalid for $($file.Name): $($sig.Status)"
+              $allValid = $false
+            }
           }
+          if (-not $allValid) { exit 1 }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
