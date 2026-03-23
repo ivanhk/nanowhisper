@@ -86,6 +86,34 @@ Logo 源文件在 `src-tauri/logo/`：
 
 两套图标独立，修改一方不影响另一方。
 
+### Auto-Update (`src-tauri/src/updater.rs`)
+
+使用 `tauri-plugin-updater`，基于 GitHub Releases 的 `latest.json` 检测更新。
+
+- **检查时机**：启动后 10 秒首次检查，之后每 4 小时；dev 模式跳过
+- **流程**：后台静默 `check()` → `download()` → 存入 `UpdateState` → 前端横幅提示 → 用户点击 Restart → `install()` → `app.restart()`
+- **录音保护**：`restart_to_update` 检查 `recorder.is_recording()`，录音中拒绝重启
+- **签名**：更新包用 ed25519 密钥签名（`~/.tauri/nanowhisper.key`），公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`
+
 ### CI/CD
 
 GitHub Actions release workflow (`.github/workflows/release.yml`) triggered by `v*` tags. Builds for macOS ARM64, macOS x64, Linux x64, Windows x64.
+
+### Windows 打包与签名
+
+Tauri v2 的 Windows 打包涉及两套独立的签名体系：
+
+1. **Authenticode 代码签名**（Windows SmartScreen 信任）
+   - 通过 Azure Trusted Signing 完成
+   - 必须使用 `bundle.windows.signCommand` 集成到 `tauri build` 流程中
+   - Tauri 会对每个需要签名的二进制文件调用此命令，传入文件路径作为 `%1`
+
+2. **Tauri updater ed25519 签名**（自动更新完整性验证）
+   - 通过 `TAURI_SIGNING_PRIVATE_KEY` 环境变量
+   - Tauri 在构建末尾自动生成 `.sig` 文件
+
+**关键顺序约束**：`signCommand` 在 `.sig` 生成之前执行。这意味着 `.sig` 是基于已 Authenticode 签名的文件生成的，两者一致。如果改用 post-build 签名（如 `azure/trusted-signing-action`），Authenticode 会修改文件内容，导致 `.sig` 与实际文件不匹配，updater 验签失败。
+
+**`createUpdaterArtifacts: true`（v2 模式）的 Windows 产物**：
+- updater 直接复用 NSIS installer `.exe`（不是 `.nsis.zip`，那是 v1Compatible 模式）
+- 产物为 `*-setup.exe` + `*-setup.exe.sig`

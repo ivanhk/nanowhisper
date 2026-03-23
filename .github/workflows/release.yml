@@ -155,7 +155,10 @@ jobs:
 
           rm "$CERTIFICATE_PATH"
 
-      # (Windows signing is done post-build via azure/trusted-signing-action)
+      # ── Windows: install signing CLI (used by signCommand during build) ──
+      - name: Install trusted-signing-cli
+        if: runner.os == 'Windows'
+        run: cargo install trusted-signing-cli --locked
 
       # ── Platform-specific builds ────────────────────────────────
       - name: Build Tauri app (macOS, signed + notarized)
@@ -169,26 +172,17 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build --target ${{ matrix.target }}
 
-      - name: Build Tauri app (Windows)
+      # Windows: signCommand in tauri.conf.json handles Authenticode signing during build,
+      # ensuring .exe.sig is generated from the already-signed binary.
+      - name: Build Tauri app (Windows, signed via signCommand)
         if: runner.os == 'Windows'
         env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build --target ${{ matrix.target }}
-
-      - name: Sign Windows artifacts
-        if: runner.os == 'Windows'
-        uses: azure/trusted-signing-action@v0.5.0
-        with:
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          endpoint: https://eus.codesigning.azure.net/
-          trusted-signing-account-name: golemancy
-          certificate-profile-name: golemancy
-          files-folder: src-tauri/target/${{ matrix.target }}/release/bundle
-          files-folder-filter: exe,msi
-          files-folder-depth: 5
 
       - name: Build Tauri app (Linux)
         if: runner.os == 'Linux'
@@ -252,7 +246,6 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.tar.gz
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.sig
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.nsis.zip
           if-no-files-found: error
           retention-days: 3
 
@@ -283,8 +276,7 @@ jobs:
             -name "*.rpm" -o \
             -name "*.AppImage" -o \
             -name "*.tar.gz" -o \
-            -name "*.sig" -o \
-            -name "*.nsis.zip" \
+            -name "*.sig" \
           \) -exec cp {} release/ \;
           echo "Release files:"
           ls -lh release/
@@ -327,7 +319,7 @@ jobs:
               "darwin-aarch64": "*aarch64*.app.tar.gz",
               "darwin-x86_64":  "*x64*.app.tar.gz",
               "linux-x86_64":   "*.AppImage.tar.gz",
-              "windows-x86_64": "*.nsis.zip",
+              "windows-x86_64": "*-setup.exe",
           }
 
           platforms = {}
