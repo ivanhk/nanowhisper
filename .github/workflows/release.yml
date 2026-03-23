@@ -233,6 +233,21 @@ jobs:
           }
           if (-not $allValid) { exit 1 }
 
+      # macOS: rename .app.tar.gz to include arch, preventing collision when
+      # two architectures are flattened into the same release directory.
+      - name: Rename macOS updater artifacts
+        if: runner.os == 'macOS'
+        run: |
+          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle/macos"
+          for f in "$BUNDLE_DIR"/*.app.tar.gz; do
+            [ -f "$f" ] || continue
+            ARCH=$( [[ "${{ matrix.target }}" == aarch64-* ]] && echo "aarch64" || echo "x64" )
+            BASE=$(basename "$f" .app.tar.gz)
+            mv "$f"     "$BUNDLE_DIR/${BASE}_${ARCH}.app.tar.gz"
+            mv "$f.sig" "$BUNDLE_DIR/${BASE}_${ARCH}.app.tar.gz.sig"
+            echo "Renamed: ${BASE}_${ARCH}.app.tar.gz"
+          done
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -315,26 +330,38 @@ jobs:
           base = f"https://github.com/jicaiinc/nanowhisper/releases/download/{os.environ['TAG']}"
 
           # Map Tauri updater platform keys to file glob patterns
+          # macOS: renamed in build job to include arch suffix
+          # Linux: v2 updater uses .AppImage directly (not .tar.gz)
+          # Windows: v2 updater uses -setup.exe directly (not .nsis.zip)
           platform_patterns = {
-              "darwin-aarch64": "*aarch64*.app.tar.gz",
-              "darwin-x86_64":  "*x64*.app.tar.gz",
-              "linux-x86_64":   "*.AppImage.tar.gz",
+              "darwin-aarch64": "*_aarch64.app.tar.gz",
+              "darwin-x86_64":  "*_x64.app.tar.gz",
+              "linux-x86_64":   "*.AppImage",
               "windows-x86_64": "*-setup.exe",
           }
 
           platforms = {}
+          missing = []
           for key, pattern in platform_patterns.items():
               files = glob.glob(pattern)
               if not files:
-                  print(f"::warning::No updater artifact matching {pattern}")
+                  missing.append(f"{key}: no file matching {pattern}")
+                  continue
+              if len(files) > 1:
+                  missing.append(f"{key}: multiple matches {files}, expected exactly one")
                   continue
               artifact = files[0]
               sig_file = artifact + ".sig"
               if not os.path.isfile(sig_file):
-                  print(f"::warning::No signature file for {artifact}")
+                  missing.append(f"{key}: no signature file {sig_file}")
                   continue
               sig = open(sig_file).read().strip()
               platforms[key] = {"signature": sig, "url": f"{base}/{artifact}"}
+
+          if missing:
+              for m in missing:
+                  print(f"::error::{m}")
+              sys.exit(1)
 
           manifest = {
               "version": version,
