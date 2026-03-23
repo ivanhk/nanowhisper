@@ -1,7 +1,7 @@
 {
   "name": "nanowhisper",
   "private": true,
-  "version": "0.1.16",
+  "version": "0.1.17",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,9 +10,10 @@
     "sync-version": "node -e \"const v=require('./package.json').version; const fs=require('fs'); let c=fs.readFileSync('src-tauri/Cargo.toml','utf8'); c=c.replace(/^version = \\\".*\\\"/m,'version = \\\"'+v+'\\\"'); fs.writeFileSync('src-tauri/Cargo.toml',c); let t=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8')); t.version=v; fs.writeFileSync('src-tauri/tauri.conf.json',JSON.stringify(t,null,2)+'\\n'); console.log('Synced version:',v)\""
   },
   "dependencies": {
+    "@tailwindcss/vite": "^4.1",
     "@tauri-apps/api": "^2.10.0",
     "@tauri-apps/plugin-clipboard-manager": "~2.3.2",
-    "@tailwindcss/vite": "^4.1",
+    "@tauri-apps/plugin-updater": "^2.10.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwindcss": "^4.1"

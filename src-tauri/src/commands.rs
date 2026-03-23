@@ -1,6 +1,8 @@
 use crate::history::{HistoryEntry, HistoryManager};
 use crate::paste::EnigoState;
+use crate::recorder::AudioRecorder;
 use crate::settings::{self, AppSettings};
+use crate::updater;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -160,4 +162,39 @@ pub async fn retry_transcription(
     let _ = app.emit("history-updated", ());
 
     Ok(text)
+}
+
+#[tauri::command]
+pub async fn check_for_update(app: AppHandle) -> Result<Option<String>, String> {
+    updater::check_and_download(&app)
+        .await
+        .map_err(|e| e.to_string())?;
+    let state = app.state::<updater::UpdateState>();
+    let version = state
+        .pending
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|u| u.version.clone());
+    Ok(version)
+}
+
+#[tauri::command]
+pub fn restart_to_update(
+    app: AppHandle,
+    recorder: State<'_, Arc<AudioRecorder>>,
+) -> Result<(), String> {
+    if recorder.is_recording() {
+        return Err("Recording in progress".into());
+    }
+    let state = app.state::<updater::UpdateState>();
+    let mut guard = state.pending.lock().unwrap();
+    if let Some(p) = guard.as_ref() {
+        // Install first; only remove pending data on success
+        p.update.install(&p.bytes).map_err(|e| e.to_string())?;
+        guard.take();
+        drop(guard);
+        app.restart();
+    }
+    Ok(())
 }

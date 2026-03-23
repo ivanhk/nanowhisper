@@ -137,6 +137,8 @@ function App() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [apiKeyStatus, setApiKeyStatus] = useState<"untested" | "testing" | "ok" | "error">("untested");
   const [apiKeyError, setApiKeyError] = useState<string | null>(null);
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  const [updateBlocked, setUpdateBlocked] = useState(false);
 
   const loadHistory = useCallback(async () => {
     const entries = await invoke<HistoryEntry[]>("get_history");
@@ -186,9 +188,13 @@ function App() {
       setErrorMsg(e.payload);
       setTimeout(() => setErrorMsg(null), 5000);
     });
+    const unlisten3 = listen<{ version: string }>("update-downloaded", (e) => {
+      setUpdateVersion(e.payload.version);
+    });
     return () => {
       unlisten1.then((f) => f());
       unlisten2.then((f) => f());
+      unlisten3.then((f) => f());
     };
   }, [loadHistory, loadSettings, checkPermissions]);
 
@@ -542,6 +548,27 @@ function App() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 pb-4">
+      {updateVersion && (
+        <div className="mb-3 px-3 py-2 rounded-lg text-xs flex items-center justify-between"
+          style={{ background: "#34c75920", border: "1px solid #34c75940", color: "#34c759" }}>
+          <span>v{updateVersion} ready</span>
+          <button onClick={async () => {
+            try {
+              await invoke("restart_to_update");
+            } catch (e) {
+              if (String(e).includes("Recording")) {
+                setUpdateBlocked(true);
+                setTimeout(() => setUpdateBlocked(false), 3000);
+              } else {
+                setErrorMsg(String(e));
+                setTimeout(() => setErrorMsg(null), 5000);
+              }
+            }
+          }} className="font-medium" style={{ color: "#34c759" }}>
+            {updateBlocked ? "Recording..." : "Restart to update"}
+          </button>
+        </div>
+      )}
       {errorMsg && (
         <div className="mb-3 px-3 py-2 rounded-lg text-xs" style={{ background: "#ff453a20", border: "1px solid #ff453a40", color: "#ff453a" }}>
           Transcription failed: {errorMsg}

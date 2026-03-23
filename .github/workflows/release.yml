@@ -165,10 +165,15 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: NDX2ZZ8U2R
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build --target ${{ matrix.target }}
 
       - name: Build Tauri app (Windows)
         if: runner.os == 'Windows'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build --target ${{ matrix.target }}
 
       - name: Sign Windows artifacts
@@ -187,6 +192,9 @@ jobs:
 
       - name: Build Tauri app (Linux)
         if: runner.os == 'Linux'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build --target ${{ matrix.target }}
 
       # ── Verification ────────────────────────────────────────────
@@ -242,6 +250,9 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.rpm
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.tar.gz
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.sig
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.nsis.zip
           if-no-files-found: error
           retention-days: 3
 
@@ -270,10 +281,83 @@ jobs:
             -name "*.msi" -o \
             -name "*.deb" -o \
             -name "*.rpm" -o \
-            -name "*.AppImage" \
+            -name "*.AppImage" -o \
+            -name "*.tar.gz" -o \
+            -name "*.sig" -o \
+            -name "*.nsis.zip" \
           \) -exec cp {} release/ \;
           echo "Release files:"
           ls -lh release/
+
+      - name: Generate updater manifest
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG#v}"
+          BASE="https://github.com/jicaiinc/nanowhisper/releases/download/$TAG"
+          cd release
+
+          # Helper: find updater artifact and read its signature
+          get_platform() {
+            local pattern="$1"
+            local file=$(ls $pattern 2>/dev/null | head -1)
+            if [ -z "$file" ]; then
+              echo "::warning::No updater artifact matching $pattern" >&2
+              return 1
+            fi
+            local sig_file="${file}.sig"
+            if [ ! -f "$sig_file" ]; then
+              echo "::warning::No signature file for $file" >&2
+              return 1
+            fi
+            local sig=$(cat "$sig_file")
+            echo "{\"signature\":\"${sig}\",\"url\":\"${BASE}/${file}\"}"
+          }
+
+          # Generate latest.json with Python — robust against special chars in signatures
+          python3 << 'PYSCRIPT'
+          import glob, json, os
+          from datetime import datetime, timezone
+
+          version = os.environ["TAG"].lstrip("v")
+          base = f"https://github.com/jicaiinc/nanowhisper/releases/download/{os.environ['TAG']}"
+
+          # Map Tauri updater platform keys to file glob patterns
+          platform_patterns = {
+              "darwin-aarch64": "*aarch64*.app.tar.gz",
+              "darwin-x86_64":  "*x64*.app.tar.gz",
+              "linux-x86_64":   "*.AppImage.tar.gz",
+              "windows-x86_64": "*.nsis.zip",
+          }
+
+          platforms = {}
+          for key, pattern in platform_patterns.items():
+              files = glob.glob(pattern)
+              if not files:
+                  print(f"::warning::No updater artifact matching {pattern}")
+                  continue
+              artifact = files[0]
+              sig_file = artifact + ".sig"
+              if not os.path.isfile(sig_file):
+                  print(f"::warning::No signature file for {artifact}")
+                  continue
+              sig = open(sig_file).read().strip()
+              platforms[key] = {"signature": sig, "url": f"{base}/{artifact}"}
+
+          manifest = {
+              "version": version,
+              "pub_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "platforms": platforms,
+          }
+          with open("latest.json", "w") as f:
+              json.dump(manifest, f, indent=2)
+
+          print("Generated latest.json:")
+          print(json.dumps(manifest, indent=2))
+          PYSCRIPT
+
+          echo "Generated latest.json:"
+          cat latest.json
 
       - name: Generate checksums
         run: |

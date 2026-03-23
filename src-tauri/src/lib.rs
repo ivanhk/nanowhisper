@@ -7,6 +7,7 @@ mod recorder;
 mod settings;
 mod sound;
 mod transcribe;
+mod updater;
 
 use history::HistoryManager;
 use recorder::{encode_wav, AudioRecorder};
@@ -145,6 +146,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::get_history,
             commands::delete_history_entry,
@@ -161,6 +163,8 @@ pub fn run() {
             commands::save_overlay_position,
             commands::pause_shortcut,
             commands::resume_shortcut,
+            commands::check_for_update,
+            commands::restart_to_update,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -259,6 +263,9 @@ pub fn run() {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
             }
+
+            // Initialize auto-updater
+            updater::init(&app_handle);
 
             log::info!("App started. Shortcut: {}", settings.shortcut);
             log::info!("API key configured: {}", !settings.api_key.is_empty());
