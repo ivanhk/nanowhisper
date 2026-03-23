@@ -155,10 +155,55 @@ jobs:
 
           rm "$CERTIFICATE_PATH"
 
-      # ── Windows: install signing CLI (used by signCommand during build) ──
-      - name: Install trusted-signing-cli
+      # ── Windows: setup Microsoft official signing tools (signtool.exe + dlib) ──
+      - name: Setup Windows code signing
         if: runner.os == 'Windows'
-        run: cargo install trusted-signing-cli --locked
+        shell: pwsh
+        run: |
+          # Download Microsoft.ArtifactSigning.Client NuGet package (official dlib)
+          Invoke-WebRequest -Uri https://dist.nuget.org/win-x86-commandline/latest/nuget.exe -OutFile "$env:RUNNER_TEMP\nuget.exe"
+          & "$env:RUNNER_TEMP\nuget.exe" install Microsoft.ArtifactSigning.Client -Version 1.0.115 -ExcludeVersion -OutputDirectory "$env:RUNNER_TEMP\signing"
+
+          $dlib = "$env:RUNNER_TEMP\signing\Microsoft.ArtifactSigning.Client\bin\x64\Azure.CodeSigning.Dlib.dll"
+          if (!(Test-Path $dlib)) { throw "Azure.CodeSigning.Dlib.dll not found" }
+
+          # Find signtool.exe (latest Windows SDK, x64)
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter "signtool.exe" |
+            Where-Object { $_.FullName -like "*\x64\*" } |
+            Sort-Object { [version]($_.Directory.Parent.Name) } -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (!$signtool) { throw "signtool.exe not found" }
+          Write-Host "signtool: $signtool"
+
+          # Create metadata.json for Azure Trusted Signing
+          $metadata = "$env:RUNNER_TEMP\metadata.json"
+          @{
+            Endpoint = "https://eus.codesigning.azure.net"
+            CodeSigningAccountName = "golemancy"
+            CertificateProfileName = "golemancy"
+            ExcludeCredentials = @(
+              "ManagedIdentityCredential",
+              "WorkloadIdentityCredential",
+              "SharedTokenCacheCredential",
+              "VisualStudioCredential",
+              "VisualStudioCodeCredential",
+              "AzureCliCredential",
+              "AzurePowerShellCredential",
+              "AzureDeveloperCliCredential",
+              "InteractiveBrowserCredential"
+            )
+          } | ConvertTo-Json | Out-File -Encoding utf8 $metadata
+
+          # Create wrapper script (referenced by signCommand in tauri.conf.json)
+          $wrapperDir = "$env:RUNNER_TEMP\sign-wrapper"
+          New-Item -ItemType Directory -Path $wrapperDir -Force | Out-Null
+          $script = '@echo off
+          "__SIGNTOOL__" sign /v /fd SHA256 /tr "http://timestamp.acs.microsoft.com" /td SHA256 /dlib "__DLIB__" /dmdf "__METADATA__" "%~1"'
+          $script = $script.Replace('__SIGNTOOL__', $signtool).Replace('__DLIB__', $dlib).Replace('__METADATA__', $metadata)
+          $script | Out-File -Encoding ascii "$wrapperDir\nanowhisper-sign.cmd"
+
+          echo "$wrapperDir" >> $env:GITHUB_PATH
+          Write-Host "Signing wrapper created"
 
       # ── Platform-specific builds ────────────────────────────────
       - name: Build Tauri app (macOS, signed + notarized)

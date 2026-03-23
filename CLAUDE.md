@@ -105,8 +105,9 @@ Tauri v2 的 Windows 打包涉及两套独立的签名体系：
 
 1. **Authenticode 代码签名**（Windows SmartScreen 信任）
    - 通过 Azure Trusted Signing 完成
-   - 必须使用 `bundle.windows.signCommand` 集成到 `tauri build` 流程中
-   - Tauri 会对每个需要签名的二进制文件调用此命令，传入文件路径作为 `%1`
+   - 使用微软官方 `signtool.exe` + `Azure.CodeSigning.Dlib.dll`（来自 NuGet 包 `Microsoft.ArtifactSigning.Client`）
+   - CI 中生成 `nanowhisper-sign.cmd` 包装脚本，通过 `bundle.windows.signCommand` 集成到 `tauri build` 流程
+   - 认证通过 `AZURE_CLIENT_ID/SECRET/TENANT_ID` 环境变量（EnvironmentCredential）
 
 2. **Tauri updater ed25519 签名**（自动更新完整性验证）
    - 通过 `TAURI_SIGNING_PRIVATE_KEY` 环境变量
