@@ -2527,9 +2527,10 @@ dependencies = [
 
 [[package]]
 name = "nanowhisper"
-version = "0.1.23"
+version = "0.1.25"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "block2",
  "chrono",
  "core-foundation 0.10.1",
