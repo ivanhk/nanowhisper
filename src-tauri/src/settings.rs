@@ -3,8 +3,12 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
+    #[serde(default = "default_provider")]
+    pub provider: String,
     #[serde(default = "default_api_key")]
     pub api_key: String,
+    #[serde(default)]
+    pub gemini_api_key: String,
     #[serde(default = "default_model")]
     pub model: String,
     #[serde(default = "default_language")]
@@ -19,6 +23,9 @@ pub struct AppSettings {
     pub overlay_ry: Option<f64>,
 }
 
+fn default_provider() -> String {
+    "openai".to_string()
+}
 fn default_api_key() -> String {
     String::new()
 }
@@ -38,7 +45,9 @@ fn default_sound_enabled() -> bool {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            provider: default_provider(),
             api_key: default_api_key(),
+            gemini_api_key: String::new(),
             model: default_model(),
             language: default_language(),
             shortcut: default_shortcut(),

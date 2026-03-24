@@ -266,8 +266,13 @@ pub fn run() {
             // Initialize auto-updater
             updater::init(&app_handle);
 
-            log::info!("App started. Shortcut: {}", settings.shortcut);
-            log::info!("API key configured: {}", !settings.api_key.is_empty());
+            log::info!("App started. Provider: {}, Shortcut: {}", settings.provider, settings.shortcut);
+            let active_key_set = if settings.provider == "gemini" {
+                !settings.gemini_api_key.is_empty()
+            } else {
+                !settings.api_key.is_empty()
+            };
+            log::info!("API key configured: {}", active_key_set);
 
             Ok(())
         })
@@ -510,7 +515,13 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
     let audio_path_str = audio_path.to_string_lossy().to_string();
 
     let settings = settings::get_settings();
-    if settings.api_key.is_empty() {
+    let is_gemini = settings.provider == "gemini";
+    let active_key = if is_gemini {
+        settings.gemini_api_key.clone()
+    } else {
+        settings.api_key.clone()
+    };
+    if active_key.is_empty() {
         log::error!("API key not configured!");
         close_overlay(app_handle);
         if let Some(w) = app_handle.get_webview_window("main") {
@@ -524,10 +535,9 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
     let history = history.inner().clone();
     let model = settings.model.clone();
     let language = settings.language.clone();
-    let api_key = settings.api_key.clone();
     let http_client = app_handle.state::<reqwest::Client>().inner().clone();
 
-    log::info!("Calling API with model={}...", model);
+    log::info!("Calling {} API with model={}...", settings.provider, model);
 
     let duration_ms = if sample_rate > 0 {
         Some((sample_count as i64 * 1000) / sample_rate as i64)
@@ -542,7 +552,13 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
             Some(language.as_str())
         };
 
-        match transcribe::transcribe_audio(&http_client, &api_key, &model, wav_data, lang).await {
+        let result = if is_gemini {
+            transcribe::transcribe_gemini(&http_client, &active_key, &model, wav_data, lang).await
+        } else {
+            transcribe::transcribe_audio(&http_client, &active_key, &model, wav_data, lang).await
+        };
+
+        match result {
             Ok(text) => {
                 log::info!("Transcription: {}", text);
 

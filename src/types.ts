@@ -8,7 +8,9 @@ export interface HistoryEntry {
 }
 
 export interface AppSettings {
+  provider: string;
   api_key: string;
+  gemini_api_key: string;
   model: string;
   language: string;
   shortcut: string;

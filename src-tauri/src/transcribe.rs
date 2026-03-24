@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use base64::Engine;
 use reqwest::multipart;
 
 /// Validate API key by sending a tiny silent WAV to the transcription endpoint.
@@ -95,4 +96,137 @@ pub async fn transcribe_audio(
         .to_string();
 
     Ok(text)
+}
+
+// ── Google Gemini (generateContent) ─────────────────────────────────
+
+const GEMINI_INLINE_LIMIT: usize = 20 * 1024 * 1024; // 20 MB
+
+/// Validate Gemini API key by sending a tiny silent WAV.
+pub async fn validate_gemini_api_key(client: &reqwest::Client, api_key: &str) -> Result<()> {
+    let wav = generate_silent_wav();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&wav);
+
+    let body = serde_json::json!({
+        "contents": [{
+            "parts": [
+                {"text": "Transcribe the following audio. Output only the transcribed text, nothing else."},
+                {"inline_data": {"mime_type": "audio/wav", "data": b64}}
+            ]
+        }]
+    });
+
+    let resp = client
+        .post("https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent")
+        .header("x-goog-api-key", api_key)
+        .json(&body)
+        .send()
+        .await
+        .context("Network error")?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        if body.contains("API_KEY_INVALID") || body.contains("PERMISSION_DENIED") || status.as_u16() == 401 {
+            anyhow::bail!("Invalid API key");
+        }
+        anyhow::bail!("Gemini API error {}: {}", status, body);
+    }
+    Ok(())
+}
+
+pub async fn transcribe_gemini(
+    client: &reqwest::Client,
+    api_key: &str,
+    model: &str,
+    wav_data: Vec<u8>,
+    language: Option<&str>,
+) -> Result<String> {
+    // Check inline size limit (base64 expands ~33%)
+    let estimated_b64_size = (wav_data.len() * 4 + 2) / 3;
+    if estimated_b64_size > GEMINI_INLINE_LIMIT {
+        anyhow::bail!(
+            "Audio file too large for Gemini ({:.1} MB). Maximum is ~15 MB WAV.",
+            wav_data.len() as f64 / 1_048_576.0
+        );
+    }
+
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&wav_data);
+
+    let prompt = match language {
+        Some(lang) if lang != "auto" => {
+            let lang_name = language_code_to_name(lang);
+            format!(
+                "Transcribe the following audio. Output only the transcribed text, nothing else. The language is {}.",
+                lang_name
+            )
+        }
+        _ => "Transcribe the following audio. Output only the transcribed text, nothing else.".to_string(),
+    };
+
+    let body = serde_json::json!({
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": "audio/wav", "data": b64}}
+            ]
+        }]
+    });
+
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+        model
+    );
+
+    let resp = client
+        .post(&url)
+        .header("x-goog-api-key", api_key)
+        .json(&body)
+        .send()
+        .await
+        .context("Failed to send transcription request")?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Gemini API error {}: {}", status, body);
+    }
+
+    let json: serde_json::Value = resp.json().await.context("Failed to parse API response")?;
+
+    // Check for content filtering / prompt block
+    if let Some(reason) = json["promptFeedback"]["blockReason"].as_str() {
+        anyhow::bail!("Gemini blocked the request: {}", reason);
+    }
+
+    // Concatenate all text parts from the first candidate
+    let text = json["candidates"][0]["content"]["parts"]
+        .as_array()
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default();
+
+    if text.is_empty() {
+        anyhow::bail!("Gemini returned empty transcription");
+    }
+
+    Ok(text.trim().to_string())
+}
+
+fn language_code_to_name(code: &str) -> &str {
+    match code {
+        "zh" => "Chinese",
+        "en" => "English",
+        "ja" => "Japanese",
+        "ko" => "Korean",
+        "es" => "Spanish",
+        "fr" => "French",
+        "de" => "German",
+        _ => code,
+    }
 }

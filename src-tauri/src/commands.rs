@@ -63,13 +63,18 @@ pub fn request_microphone() -> bool {
 }
 
 #[tauri::command]
-pub async fn validate_api_key(app: AppHandle, api_key: String) -> Result<(), String> {
+pub async fn validate_api_key(app: AppHandle, api_key: String, provider: String) -> Result<(), String> {
     let client = app
         .try_state::<reqwest::Client>()
         .ok_or("HTTP client not initialized")?;
-    crate::transcribe::validate_api_key(&client, &api_key)
-        .await
-        .map_err(|e| e.to_string())
+    match provider.as_str() {
+        "gemini" => crate::transcribe::validate_gemini_api_key(&client, &api_key)
+            .await
+            .map_err(|e| e.to_string()),
+        _ => crate::transcribe::validate_api_key(&client, &api_key)
+            .await
+            .map_err(|e| e.to_string()),
+    }
 }
 
 #[tauri::command]
@@ -134,7 +139,9 @@ pub async fn retry_transcription(
     let wav_data = std::fs::read(audio_path).map_err(|e| e.to_string())?;
 
     let settings = crate::settings::get_settings();
-    if settings.api_key.is_empty() {
+    let is_gemini = settings.provider == "gemini";
+    let active_key = if is_gemini { &settings.gemini_api_key } else { &settings.api_key };
+    if active_key.is_empty() {
         return Err("API key not configured".into());
     }
 
@@ -147,9 +154,15 @@ pub async fn retry_transcription(
     let client = app
         .try_state::<reqwest::Client>()
         .ok_or("HTTP client not initialized")?;
-    let text = transcribe::transcribe_audio(&client, &settings.api_key, &settings.model, wav_data, lang)
-        .await
-        .map_err(|e| e.to_string())?;
+    let text = if is_gemini {
+        transcribe::transcribe_gemini(&client, active_key, &settings.model, wav_data, lang)
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        transcribe::transcribe_audio(&client, active_key, &settings.model, wav_data, lang)
+            .await
+            .map_err(|e| e.to_string())?
+    };
 
     // Update entry in place (preserves ID and audio_path)
     history

@@ -12,6 +12,20 @@ const modKey = isMac ? "⌘" : "Ctrl";
 
 const defaultHotkey = isMac ? "Right ⌘" : "Right Ctrl";
 
+const OPENAI_MODELS = [
+  { value: "gpt-4o-transcribe", label: "gpt-4o-transcribe" },
+  { value: "gpt-4o-mini-transcribe", label: "gpt-4o-mini-transcribe" },
+  { value: "whisper-1", label: "whisper-1" },
+];
+const GEMINI_MODELS = [
+  { value: "gemini-3-flash-preview", label: "Gemini 3 Flash" },
+  { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro" },
+];
+const DEFAULT_MODELS: Record<string, string> = {
+  openai: "gpt-4o-transcribe",
+  gemini: "gemini-3-flash-preview",
+};
+
 function displayShortcut(s: string): string {
   if (!s) return defaultHotkey;
   return s
@@ -148,7 +162,8 @@ function App() {
   const loadSettings = useCallback(async () => {
     const s = await invoke<AppSettings>("get_settings");
     setSettings(s);
-    if (!s.api_key) setView("onboarding");
+    const key = s.provider === "gemini" ? s.gemini_api_key : s.api_key;
+    if (!key) setView("onboarding");
   }, []);
 
   const checkPermissions = useCallback(async () => {
@@ -249,18 +264,20 @@ function App() {
     await invoke("save_settings", { settings });
   };
 
-  const testApiKey = async (key: string) => {
+  const testApiKey = async (key: string, provider: string) => {
     if (!key) return;
     setApiKeyStatus("testing");
     setApiKeyError(null);
     try {
-      await invoke("validate_api_key", { apiKey: key });
+      await invoke("validate_api_key", { apiKey: key, provider });
       setApiKeyStatus("ok");
     } catch (e) {
       setApiKeyStatus("error");
       setApiKeyError(String(e));
     }
   };
+
+  const activeApiKey = settings ? (settings.provider === "gemini" ? settings.gemini_api_key : settings.api_key) : "";
 
   const formatTime = (ts: number) => {
     const d = new Date(ts * 1000);
@@ -306,38 +323,67 @@ function App() {
             <img src={logoUrl} alt="" width={28} height={28} />
             <h1 className="text-xl font-semibold">NanoWhisper</h1>
           </div>
-          <p className="text-xs" style={{ color: "var(--text-secondary)" }}>Pure Whisper. Nothing else.</p>
+          <p className="text-xs" style={{ color: "var(--text-secondary)" }}>Speech to text, simply.</p>
         </div>
 
         <div className="space-y-5">
-          {/* Step 1: API Key */}
+          {/* Step 1: Speech Provider */}
           <div>
             <div className="flex items-center gap-2 mb-2">
               <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ background: "var(--accent)", color: "white" }}>1</span>
-              <span className="text-sm font-medium">OpenAI API Key</span>
+              <span className="text-sm font-medium">Speech Provider</span>
               {apiKeyStatus === "ok" && <span style={{ color: "#34c759" }}>&#10003;</span>}
             </div>
-            <input
-              type="password"
-              value={settings.api_key}
+            <select
+              value={settings.provider}
               onChange={(e) => {
-                setSettings({ ...settings, api_key: e.target.value });
+                const p = e.target.value;
+                setSettings({ ...settings, provider: p, model: DEFAULT_MODELS[p] || "gpt-4o-transcribe" });
                 setApiKeyStatus("untested");
                 setApiKeyError(null);
               }}
-              placeholder="sk-proj-..."
-              className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+              className="w-full px-3 py-2 rounded-lg text-sm outline-none mb-2"
               style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
-            />
+            >
+              <option value="openai">OpenAI</option>
+              <option value="gemini">Gemini</option>
+            </select>
+            {settings.provider === "gemini" ? (
+              <input
+                type="password"
+                value={settings.gemini_api_key}
+                onChange={(e) => {
+                  setSettings({ ...settings, gemini_api_key: e.target.value });
+                  setApiKeyStatus("untested");
+                  setApiKeyError(null);
+                }}
+                placeholder="AIza..."
+                className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+                style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
+              />
+            ) : (
+              <input
+                type="password"
+                value={settings.api_key}
+                onChange={(e) => {
+                  setSettings({ ...settings, api_key: e.target.value });
+                  setApiKeyStatus("untested");
+                  setApiKeyError(null);
+                }}
+                placeholder="sk-proj-..."
+                className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+                style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
+              />
+            )}
             <button
-              onClick={() => testApiKey(settings.api_key)}
-              disabled={!settings.api_key || apiKeyStatus === "testing"}
+              onClick={() => testApiKey(activeApiKey, settings.provider)}
+              disabled={!activeApiKey || apiKeyStatus === "testing"}
               className="w-full mt-2 px-3 py-2 rounded-lg text-sm font-medium"
               style={{
                 background: apiKeyStatus === "ok" ? "#34c75920" : "var(--accent)",
                 color: apiKeyStatus === "ok" ? "#34c759" : "white",
-                cursor: !settings.api_key || apiKeyStatus === "testing" ? "not-allowed" : "pointer",
-                opacity: !settings.api_key || apiKeyStatus === "testing" ? 0.5 : 1,
+                cursor: !activeApiKey || apiKeyStatus === "testing" ? "not-allowed" : "pointer",
+                opacity: !activeApiKey || apiKeyStatus === "testing" ? 0.5 : 1,
               }}
             >
               {apiKeyStatus === "testing" ? "Testing..." : apiKeyStatus === "ok" ? "Connected" : "Test Connection"}
@@ -432,21 +478,41 @@ function App() {
         </div>
         <div className="space-y-4">
           <div>
-            <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>API Key</label>
-            <input type="password" value={settings.api_key} onChange={(e) => {
-              setSettings({ ...settings, api_key: e.target.value });
+            <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Provider</label>
+            <select value={settings.provider} onChange={(e) => {
+              const p = e.target.value;
+              setSettings({ ...settings, provider: p, model: DEFAULT_MODELS[p] || "gpt-4o-transcribe" });
               setApiKeyStatus("untested");
               setApiKeyError(null);
-            }} placeholder="sk-..." className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
+            }} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}>
+              <option value="openai">OpenAI</option>
+              <option value="gemini">Gemini</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>{settings.provider === "gemini" ? "Gemini API Key" : "OpenAI API Key"}</label>
+            {settings.provider === "gemini" ? (
+              <input type="password" value={settings.gemini_api_key} onChange={(e) => {
+                setSettings({ ...settings, gemini_api_key: e.target.value });
+                setApiKeyStatus("untested");
+                setApiKeyError(null);
+              }} placeholder="AIza..." className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
+            ) : (
+              <input type="password" value={settings.api_key} onChange={(e) => {
+                setSettings({ ...settings, api_key: e.target.value });
+                setApiKeyStatus("untested");
+                setApiKeyError(null);
+              }} placeholder="sk-..." className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
+            )}
             <button
-              onClick={() => testApiKey(settings.api_key)}
-              disabled={!settings.api_key || apiKeyStatus === "testing"}
+              onClick={() => testApiKey(activeApiKey, settings.provider)}
+              disabled={!activeApiKey || apiKeyStatus === "testing"}
               className="w-full mt-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
               style={{
                 background: apiKeyStatus === "ok" ? "#34c75920" : "var(--border)",
                 color: apiKeyStatus === "ok" ? "#34c759" : "var(--text)",
-                cursor: !settings.api_key || apiKeyStatus === "testing" ? "not-allowed" : "pointer",
-                opacity: !settings.api_key || apiKeyStatus === "testing" ? 0.5 : 1,
+                cursor: !activeApiKey || apiKeyStatus === "testing" ? "not-allowed" : "pointer",
+                opacity: !activeApiKey || apiKeyStatus === "testing" ? 0.5 : 1,
               }}
             >
               {apiKeyStatus === "testing" ? "Testing..." : apiKeyStatus === "ok" ? "Connected" : "Test Connection"}
@@ -458,9 +524,9 @@ function App() {
           <div>
             <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Model</label>
             <select value={settings.model} onChange={(e) => setSettings({ ...settings, model: e.target.value })} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}>
-              <option value="gpt-4o-transcribe">gpt-4o-transcribe</option>
-              <option value="gpt-4o-mini-transcribe">gpt-4o-mini-transcribe</option>
-              <option value="whisper-1">whisper-1</option>
+              {(settings.provider === "gemini" ? GEMINI_MODELS : OPENAI_MODELS).map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
             </select>
           </div>
           <div>
