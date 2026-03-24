@@ -111,14 +111,10 @@ fn macos_cursor_screen_bounds() -> Option<(f64, f64, f64, f64)> {
     None
 }
 
-/// Set NSWindowCollectionBehavior on the overlay so it appears on all Spaces
-/// including fullscreen, then show the window.
-/// Dispatched to the main thread (required for AppKit calls).
+/// Set NSWindowCollectionBehavior on the overlay so it appears on all Spaces.
+/// Called after window is already visible (no show/focus side effects).
 #[cfg(target_os = "macos")]
-fn macos_configure_and_show_overlay(
-    app_handle: &tauri::AppHandle,
-    window: tauri::WebviewWindow,
-) {
+fn macos_set_overlay_all_spaces(app_handle: &tauri::AppHandle, window: tauri::WebviewWindow) {
     use objc2::msg_send;
     use objc2::runtime::AnyObject;
 
@@ -134,8 +130,6 @@ fn macos_configure_and_show_overlay(
                             ns_window,
                             setCollectionBehavior: existing | (1u64 << 0) | (1u64 << 8)
                         ];
-                        // Show without activating app (preserves focus on user's current app)
-                        let _: () = msg_send![ns_window, orderFrontRegardless];
                     }
                 }
             }
@@ -437,15 +431,12 @@ fn start_recording(app_handle: &tauri::AppHandle) {
     .shadow(false)
     .focused(false)
     .accept_first_mouse(true)
-    .visible(false)
     .build()
     {
         Ok(w) => {
             log::info!("Overlay window created");
             #[cfg(target_os = "macos")]
-            macos_configure_and_show_overlay(app_handle, w);
-            #[cfg(not(target_os = "macos"))]
-            let _ = w.show();
+            macos_set_overlay_all_spaces(app_handle, w);
         }
         Err(e) => log::error!("Failed to create overlay: {}", e),
     }
