@@ -1,6 +1,14 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use reqwest::multipart;
+use serde::Serialize;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TranscriptionResult {
+    pub text: String,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+}
 
 /// Validate API key by sending a tiny silent WAV to the transcription endpoint.
 pub async fn validate_api_key(client: &reqwest::Client, api_key: &str) -> Result<()> {
@@ -60,7 +68,7 @@ pub async fn transcribe_audio(
     model: &str,
     wav_data: Vec<u8>,
     language: Option<&str>,
-) -> Result<String> {
+) -> Result<TranscriptionResult> {
     let file_part = multipart::Part::bytes(wav_data)
         .file_name("audio.wav")
         .mime_str("audio/wav")?;
@@ -95,7 +103,14 @@ pub async fn transcribe_audio(
         .context("Missing 'text' field in response")?
         .to_string();
 
-    Ok(text)
+    let input_tokens = json["usage"]["input_tokens"].as_i64();
+    let output_tokens = json["usage"]["output_tokens"].as_i64();
+
+    Ok(TranscriptionResult {
+        text,
+        input_tokens,
+        output_tokens,
+    })
 }
 
 // ── Google Gemini (generateContent) ─────────────────────────────────
@@ -141,7 +156,7 @@ pub async fn transcribe_gemini(
     model: &str,
     wav_data: Vec<u8>,
     language: Option<&str>,
-) -> Result<String> {
+) -> Result<TranscriptionResult> {
     // Check inline size limit (base64 expands ~33%)
     let estimated_b64_size = (wav_data.len() * 4 + 2) / 3;
     if estimated_b64_size > GEMINI_INLINE_LIMIT {
@@ -215,7 +230,14 @@ pub async fn transcribe_gemini(
         anyhow::bail!("Gemini returned empty transcription");
     }
 
-    Ok(text.trim().to_string())
+    let input_tokens = json["usageMetadata"]["promptTokenCount"].as_i64();
+    let output_tokens = json["usageMetadata"]["candidatesTokenCount"].as_i64();
+
+    Ok(TranscriptionResult {
+        text: text.trim().to_string(),
+        input_tokens,
+        output_tokens,
+    })
 }
 
 fn language_code_to_name(code: &str) -> &str {
@@ -228,5 +250,141 @@ fn language_code_to_name(code: &str) -> &str {
         "fr" => "French",
         "de" => "German",
         _ => code,
+    }
+}
+
+// ── DashScope (Qwen-ASR / Fun-ASR / Paraformer) ─────────────────────────
+
+const DASHSCOPE_BASE64_LIMIT: usize = 10 * 1024 * 1024;
+
+pub async fn validate_dashscope_api_key(client: &reqwest::Client, api_key: &str) -> Result<()> {
+    let wav = generate_silent_wav();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&wav);
+    let data_uri = format!("data:audio/wav;base64,{}", b64);
+
+    let body = serde_json::json!({
+        "model": "qwen3-asr-flash",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "input_audio",
+                "input_audio": { "data": data_uri }
+            }]
+        }]
+    });
+
+    let resp = client
+        .post("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .context("Network error")?;
+
+    let status = resp.status();
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        anyhow::bail!("Invalid API key");
+    }
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        if body.contains("invalid_api_key") || body.contains("InvalidApiKey") {
+            anyhow::bail!("Invalid API key");
+        }
+        anyhow::bail!("DashScope API error {}: {}", status, body);
+    }
+    Ok(())
+}
+
+pub async fn transcribe_dashscope(
+    client: &reqwest::Client,
+    api_key: &str,
+    model: &str,
+    wav_data: Vec<u8>,
+    language: Option<&str>,
+) -> Result<TranscriptionResult> {
+    let estimated_b64_size = (wav_data.len() * 4 + 2) / 3;
+    if estimated_b64_size > DASHSCOPE_BASE64_LIMIT {
+        anyhow::bail!(
+            "Audio file too large for DashScope ({:.1} MB). Maximum is ~7.5 MB WAV.",
+            wav_data.len() as f64 / 1_048_576.0
+        );
+    }
+
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&wav_data);
+    let data_uri = format!("data:audio/wav;base64,{}", b64);
+
+    let mut body = serde_json::json!({
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "input_audio",
+                "input_audio": { "data": data_uri }
+            }]
+        }]
+    });
+
+    if let Some(lang) = language {
+        if lang != "auto" {
+            if let Some(dashscope_lang) = to_dashscope_language(lang) {
+                body["asr_options"] = serde_json::json!({ "language": dashscope_lang });
+            }
+        }
+    }
+
+    let resp = client
+        .post("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .context("Failed to send transcription request")?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("DashScope API error {}: {}", status, body);
+    }
+
+    let json: serde_json::Value = resp.json().await.context("Failed to parse API response")?;
+    let text = json["choices"][0]["message"]["content"]
+        .as_str()
+        .context("Missing 'content' in response")?
+        .to_string();
+
+    if text.is_empty() {
+        anyhow::bail!("DashScope returned empty transcription");
+    }
+
+    let input_tokens = json["usage"]["prompt_tokens"].as_i64();
+    let output_tokens = json["usage"]["completion_tokens"].as_i64();
+
+    Ok(TranscriptionResult {
+        text: text.trim().to_string(),
+        input_tokens,
+        output_tokens,
+    })
+}
+
+fn to_dashscope_language(code: &str) -> Option<&'static str> {
+    match code {
+        "zh" => Some("zh"),
+        "yue" => Some("yue"),
+        "en" => Some("en"),
+        "ja" => Some("ja"),
+        "ko" => Some("ko"),
+        "de" => Some("de"),
+        "fr" => Some("fr"),
+        "ru" => Some("ru"),
+        "pt" => Some("pt"),
+        "ar" => Some("ar"),
+        "it" => Some("it"),
+        "es" => Some("es"),
+        "hi" => Some("hi"),
+        "id" => Some("id"),
+        "th" => Some("th"),
+        "tr" => Some("tr"),
+        "vi" => Some("vi"),
+        _ => None,
     }
 }

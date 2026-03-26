@@ -148,8 +148,10 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::get_history,
+            commands::get_statistics,
             commands::delete_history_entry,
             commands::clear_history,
+            commands::clear_statistics,
             commands::get_settings,
             commands::save_settings,
             commands::check_accessibility,
@@ -236,23 +238,48 @@ pub fn run() {
                 .build(app)?;
 
             // Start native hotkey monitor (Right Command on macOS, Right Ctrl on Windows)
-            // hotkey.rs already has its own 500ms debounce, so we only need the CAS guard here.
             let hotkey_handle = app_handle.clone();
-            hotkey::start(move || {
-                if SHORTCUT_PROCESSING
-                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_err()
+            hotkey::start(
                 {
-                    return;
-                }
-
-                log::info!("Native hotkey triggered");
-                let h = hotkey_handle.clone();
-                std::thread::spawn(move || {
-                    toggle_recording(&h);
-                    SHORTCUT_PROCESSING.store(false, Ordering::SeqCst);
-                });
-            });
+                    let handle = hotkey_handle.clone();
+                    move || {
+                        // on_tap: toggle mode
+                        let settings = settings::get_settings();
+                        if settings.recording_mode == "toggle" {
+                            log::info!("Native hotkey tap (toggle mode)");
+                            let h = handle.clone();
+                            std::thread::spawn(move || {
+                                toggle_recording(&h);
+                            });
+                        }
+                    }
+                },
+                {
+                    let handle = hotkey_handle.clone();
+                    move || {
+                        // on_hold_start: hold mode start recording
+                        let settings = settings::get_settings();
+                        if settings.recording_mode == "hold" {
+                            log::info!("Native hotkey hold start");
+                            let h = handle.clone();
+                            std::thread::spawn(move || {
+                                start_recording(&h);
+                            });
+                        }
+                    }
+                },
+                {
+                    let handle = hotkey_handle.clone();
+                    move || {
+                        // on_hold_end: hold mode stop recording
+                        log::info!("Native hotkey hold end");
+                        let h = handle.clone();
+                        std::thread::spawn(move || {
+                            stop_and_transcribe(&h);
+                        });
+                    }
+                },
+            );
 
             // Register global shortcut (secondary, user-configurable)
             let settings = settings::get_settings();
@@ -267,10 +294,10 @@ pub fn run() {
             updater::init(&app_handle);
 
             log::info!("App started. Provider: {}, Shortcut: {}", settings.provider, settings.shortcut);
-            let active_key_set = if settings.provider == "gemini" {
-                !settings.gemini_api_key.is_empty()
-            } else {
-                !settings.api_key.is_empty()
+            let active_key_set = match settings.provider.as_str() {
+                "gemini" => !settings.gemini_api_key.is_empty(),
+                "dashscope" => !settings.dashscope_api_key.is_empty(),
+                _ => !settings.api_key.is_empty(),
             };
             log::info!("API key configured: {}", active_key_set);
 
@@ -458,6 +485,18 @@ fn start_recording(app_handle: &tauri::AppHandle) {
     }
     log::info!("Recording started");
 
+    // Start max recording time timer
+    let max_seconds = saved.max_recording_seconds as u64;
+    let handle = app_handle.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(max_seconds));
+        let recorder = handle.state::<Arc<AudioRecorder>>();
+        if recorder.is_recording() {
+            log::info!("Max recording time ({}s) reached, auto-stopping", max_seconds);
+            stop_and_transcribe(&handle);
+        }
+    });
+
     // Register Escape only while recording
     register_escape(app_handle);
 }
@@ -515,11 +554,10 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
     let audio_path_str = audio_path.to_string_lossy().to_string();
 
     let settings = settings::get_settings();
-    let is_gemini = settings.provider == "gemini";
-    let active_key = if is_gemini {
-        settings.gemini_api_key.clone()
-    } else {
-        settings.api_key.clone()
+    let active_key = match settings.provider.as_str() {
+        "gemini" => settings.gemini_api_key.clone(),
+        "dashscope" => settings.dashscope_api_key.clone(),
+        _ => settings.api_key.clone(),
     };
     if active_key.is_empty() {
         log::error!("API key not configured!");
@@ -536,8 +574,9 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
     let model = settings.model.clone();
     let language = settings.language.clone();
     let http_client = app_handle.state::<reqwest::Client>().inner().clone();
+    let provider = settings.provider.clone();
 
-    log::info!("Calling {} API with model={}...", settings.provider, model);
+    log::info!("Calling {} API with model={}...", provider, model);
 
     let duration_ms = if sample_rate > 0 {
         Some((sample_count as i64 * 1000) / sample_rate as i64)
@@ -552,14 +591,20 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
             Some(language.as_str())
         };
 
-        let result = if is_gemini {
-            transcribe::transcribe_gemini(&http_client, &active_key, &model, wav_data, lang).await
-        } else {
-            transcribe::transcribe_audio(&http_client, &active_key, &model, wav_data, lang).await
+        let result = match provider.as_str() {
+            "gemini" => {
+                transcribe::transcribe_gemini(&http_client, &active_key, &model, wav_data.clone(), lang).await
+            }
+            "dashscope" => {
+                transcribe::transcribe_dashscope(&http_client, &active_key, &model, wav_data.clone(), lang).await
+            }
+            _ => {
+                transcribe::transcribe_audio(&http_client, &active_key, &model, wav_data.clone(), lang).await
+            }
         };
 
         match result {
-            Ok(text) => {
+            Ok(transcribe::TranscriptionResult { text, input_tokens, output_tokens }) => {
                 log::info!("Transcription: {}", text);
 
                 // Copy to clipboard and auto-paste into active app
@@ -577,14 +622,17 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
                 });
 
                 // Save to history
-                let _ = history.add_entry(&text, &model, duration_ms, Some(&audio_path_str));
+                let _ = history.add_entry(&text, &model, duration_ms, Some(&audio_path_str), input_tokens, output_tokens);
+                
+                // Update statistics
+                let _ = history.update_statistics(input_tokens, output_tokens, duration_ms);
             }
             Err(e) => {
                 log::error!("Transcription failed: {}", e);
 
                 // Save failed entry to history so user can retry
                 let error_text = format!("[Error: {}]", e);
-                let _ = history.add_entry(&error_text, &model, duration_ms, Some(&audio_path_str));
+                let _ = history.add_entry(&error_text, &model, duration_ms, Some(&audio_path_str), None, None);
 
                 let _ = handle.emit("transcription-error", e.to_string());
             }

@@ -16,6 +16,18 @@ static MIGRATIONS: &[M] = &[
         );",
     ),
     M::up("ALTER TABLE transcriptions ADD COLUMN audio_path TEXT;"),
+    M::up("ALTER TABLE transcriptions ADD COLUMN input_tokens INTEGER;"),
+    M::up("ALTER TABLE transcriptions ADD COLUMN output_tokens INTEGER;"),
+    M::up(
+        "CREATE TABLE IF NOT EXISTS statistics (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            total_duration_ms INTEGER NOT NULL DEFAULT 0,
+            count INTEGER NOT NULL DEFAULT 0
+        );",
+    ),
+    M::up("INSERT OR IGNORE INTO statistics (id) VALUES (1);"),
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -26,6 +38,16 @@ pub struct HistoryEntry {
     pub timestamp: i64,
     pub duration_ms: Option<i64>,
     pub audio_path: Option<String>,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Statistics {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_duration_ms: i64,
+    pub count: i64,
 }
 
 pub struct HistoryManager {
@@ -64,12 +86,14 @@ impl HistoryManager {
         model: &str,
         duration_ms: Option<i64>,
         audio_path: Option<&str>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
     ) -> Result<HistoryEntry> {
         let conn = self.conn.lock().unwrap();
         let timestamp = chrono::Utc::now().timestamp();
         conn.execute(
-            "INSERT INTO transcriptions (text, model, timestamp, duration_ms, audio_path) VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![text, model, timestamp, duration_ms, audio_path],
+            "INSERT INTO transcriptions (text, model, timestamp, duration_ms, audio_path, input_tokens, output_tokens) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![text, model, timestamp, duration_ms, audio_path, input_tokens, output_tokens],
         )?;
         let id = conn.last_insert_rowid();
         Ok(HistoryEntry {
@@ -79,13 +103,15 @@ impl HistoryManager {
             timestamp,
             duration_ms,
             audio_path: audio_path.map(|s| s.to_string()),
+            input_tokens,
+            output_tokens,
         })
     }
 
     pub fn get_entry_by_id(&self, id: i64) -> Result<Option<HistoryEntry>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, text, model, timestamp, duration_ms, audio_path FROM transcriptions WHERE id = ?1",
+            "SELECT id, text, model, timestamp, duration_ms, audio_path, input_tokens, output_tokens FROM transcriptions WHERE id = ?1",
         )?;
         let entry = stmt
             .query_row([id], |row| {
@@ -96,18 +122,20 @@ impl HistoryManager {
                     timestamp: row.get(3)?,
                     duration_ms: row.get(4)?,
                     audio_path: row.get(5)?,
+                    input_tokens: row.get(6)?,
+                    output_tokens: row.get(7)?,
                 })
             })
             .ok();
         Ok(entry)
     }
 
-    pub fn update_entry(&self, id: i64, text: &str, model: &str) -> Result<()> {
+    pub fn update_entry(&self, id: i64, text: &str, model: &str, input_tokens: Option<i64>, output_tokens: Option<i64>) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let timestamp = chrono::Utc::now().timestamp();
         conn.execute(
-            "UPDATE transcriptions SET text = ?1, model = ?2, timestamp = ?3 WHERE id = ?4",
-            rusqlite::params![text, model, timestamp, id],
+            "UPDATE transcriptions SET text = ?1, model = ?2, timestamp = ?3, input_tokens = ?4, output_tokens = ?5 WHERE id = ?6",
+            rusqlite::params![text, model, timestamp, input_tokens, output_tokens, id],
         )?;
         Ok(())
     }
@@ -115,7 +143,7 @@ impl HistoryManager {
     pub fn get_entries(&self) -> Result<Vec<HistoryEntry>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, text, model, timestamp, duration_ms, audio_path FROM transcriptions ORDER BY timestamp DESC",
+            "SELECT id, text, model, timestamp, duration_ms, audio_path, input_tokens, output_tokens FROM transcriptions ORDER BY timestamp DESC",
         )?;
         let entries = stmt
             .query_map([], |row| {
@@ -126,6 +154,8 @@ impl HistoryManager {
                     timestamp: row.get(3)?,
                     duration_ms: row.get(4)?,
                     audio_path: row.get(5)?,
+                    input_tokens: row.get(6)?,
+                    output_tokens: row.get(7)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -159,6 +189,55 @@ impl HistoryManager {
         }
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM transcriptions", [])?;
+        Ok(())
+    }
+
+    pub fn update_statistics(
+        &self,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        duration_ms: Option<i64>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE statistics SET 
+                input_tokens = input_tokens + ?1,
+                output_tokens = output_tokens + ?2,
+                total_duration_ms = total_duration_ms + ?3,
+                count = count + 1
+            WHERE id = 1",
+            rusqlite::params![
+                input_tokens.unwrap_or(0),
+                output_tokens.unwrap_or(0),
+                duration_ms.unwrap_or(0)
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_statistics(&self) -> Result<Statistics> {
+        let conn = self.conn.lock().unwrap();
+        let stats = conn.query_row(
+            "SELECT input_tokens, output_tokens, total_duration_ms, count FROM statistics WHERE id = 1",
+            [],
+            |row| {
+                Ok(Statistics {
+                    input_tokens: row.get(0)?,
+                    output_tokens: row.get(1)?,
+                    total_duration_ms: row.get(2)?,
+                    count: row.get(3)?,
+                })
+            },
+        )?;
+        Ok(stats)
+    }
+
+    pub fn clear_statistics(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE statistics SET input_tokens = 0, output_tokens = 0, total_duration_ms = 0, count = 0 WHERE id = 1",
+            [],
+        )?;
         Ok(())
     }
 }

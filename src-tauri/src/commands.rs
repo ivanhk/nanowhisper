@@ -1,4 +1,4 @@
-use crate::history::{HistoryEntry, HistoryManager};
+use crate::history::{HistoryEntry, HistoryManager, Statistics};
 use crate::paste::EnigoState;
 use crate::recorder::AudioRecorder;
 use crate::settings::{self, AppSettings};
@@ -14,6 +14,11 @@ pub fn get_history(history: State<'_, Arc<HistoryManager>>) -> Result<Vec<Histor
 }
 
 #[tauri::command]
+pub fn get_statistics(history: State<'_, Arc<HistoryManager>>) -> Result<Statistics, String> {
+    history.get_statistics().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn delete_history_entry(
     history: State<'_, Arc<HistoryManager>>,
     id: i64,
@@ -24,6 +29,11 @@ pub fn delete_history_entry(
 #[tauri::command]
 pub fn clear_history(history: State<'_, Arc<HistoryManager>>) -> Result<(), String> {
     history.clear_all().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn clear_statistics(history: State<'_, Arc<HistoryManager>>) -> Result<(), String> {
+    history.clear_statistics().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -69,6 +79,9 @@ pub async fn validate_api_key(app: AppHandle, api_key: String, provider: String)
         .ok_or("HTTP client not initialized")?;
     match provider.as_str() {
         "gemini" => crate::transcribe::validate_gemini_api_key(&client, &api_key)
+            .await
+            .map_err(|e| e.to_string()),
+        "dashscope" => crate::transcribe::validate_dashscope_api_key(&client, &api_key)
             .await
             .map_err(|e| e.to_string()),
         _ => crate::transcribe::validate_api_key(&client, &api_key)
@@ -125,7 +138,6 @@ pub async fn retry_transcription(
 ) -> Result<String, String> {
     use crate::transcribe;
 
-    // Get the specific entry by ID
     let entry = history
         .get_entry_by_id(id)
         .map_err(|e| e.to_string())?
@@ -135,12 +147,14 @@ pub async fn retry_transcription(
         .as_ref()
         .ok_or("No audio file for this entry")?;
 
-    // Read WAV file
     let wav_data = std::fs::read(audio_path).map_err(|e| e.to_string())?;
 
     let settings = crate::settings::get_settings();
-    let is_gemini = settings.provider == "gemini";
-    let active_key = if is_gemini { &settings.gemini_api_key } else { &settings.api_key };
+    let active_key = match settings.provider.as_str() {
+        "gemini" => settings.gemini_api_key.clone(),
+        "dashscope" => settings.dashscope_api_key.clone(),
+        _ => settings.api_key.clone(),
+    };
     if active_key.is_empty() {
         return Err("API key not configured".into());
     }
@@ -154,28 +168,29 @@ pub async fn retry_transcription(
     let client = app
         .try_state::<reqwest::Client>()
         .ok_or("HTTP client not initialized")?;
-    let text = if is_gemini {
-        transcribe::transcribe_gemini(&client, active_key, &settings.model, wav_data, lang)
+
+    let result = match settings.provider.as_str() {
+        "gemini" => transcribe::transcribe_gemini(&client, &active_key, &settings.model, wav_data, lang)
             .await
-            .map_err(|e| e.to_string())?
-    } else {
-        transcribe::transcribe_audio(&client, active_key, &settings.model, wav_data, lang)
+            .map_err(|e| e.to_string())?,
+        "dashscope" => transcribe::transcribe_dashscope(&client, &active_key, &settings.model, wav_data, lang)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?,
+        _ => transcribe::transcribe_audio(&client, &active_key, &settings.model, wav_data, lang)
+            .await
+            .map_err(|e| e.to_string())?,
     };
 
-    // Update entry in place (preserves ID and audio_path)
     history
-        .update_entry(id, &text, &settings.model)
+        .update_entry(id, &result.text, &settings.model, result.input_tokens, result.output_tokens)
         .map_err(|e| e.to_string())?;
 
-    // Copy + paste
-    let _ = app.clipboard().write_text(&text);
+    let _ = app.clipboard().write_text(&result.text);
     crate::paste::simulate_paste(&app).ok();
 
     let _ = app.emit("history-updated", ());
 
-    Ok(text)
+    Ok(result.text)
 }
 
 #[tauri::command]

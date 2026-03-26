@@ -9,6 +9,8 @@ pub struct AppSettings {
     pub api_key: String,
     #[serde(default)]
     pub gemini_api_key: String,
+    #[serde(default)]
+    pub dashscope_api_key: String,
     #[serde(default = "default_model")]
     pub model: String,
     #[serde(default = "default_language")]
@@ -21,6 +23,16 @@ pub struct AppSettings {
     pub overlay_rx: Option<f64>,
     #[serde(default)]
     pub overlay_ry: Option<f64>,
+    #[serde(default = "default_history_limit")]
+    pub history_limit: i64,
+    #[serde(default)]
+    pub api_key_validated: bool,
+    #[serde(default = "default_recording_mode")]
+    pub recording_mode: String,
+    #[serde(default = "default_trigger_delay_ms")]
+    pub trigger_delay_ms: i64,
+    #[serde(default = "default_max_recording_seconds")]
+    pub max_recording_seconds: i64,
 }
 
 fn default_provider() -> String {
@@ -41,6 +53,18 @@ fn default_shortcut() -> String {
 fn default_sound_enabled() -> bool {
     true
 }
+fn default_history_limit() -> i64 {
+    50
+}
+fn default_recording_mode() -> String {
+    "toggle".to_string()
+}
+fn default_trigger_delay_ms() -> i64 {
+    400
+}
+fn default_max_recording_seconds() -> i64 {
+    60
+}
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -48,12 +72,18 @@ impl Default for AppSettings {
             provider: default_provider(),
             api_key: default_api_key(),
             gemini_api_key: String::new(),
+            dashscope_api_key: String::new(),
             model: default_model(),
             language: default_language(),
             shortcut: default_shortcut(),
             sound_enabled: default_sound_enabled(),
             overlay_rx: None,
             overlay_ry: None,
+            history_limit: default_history_limit(),
+            api_key_validated: false,
+            recording_mode: default_recording_mode(),
+            trigger_delay_ms: default_trigger_delay_ms(),
+            max_recording_seconds: default_max_recording_seconds(),
         }
     }
 }

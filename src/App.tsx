@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import type { HistoryEntry, AppSettings } from "./types";
+import type { HistoryEntry, AppSettings, Statistics } from "./types";
 import logoUrl from "./assets/logo.png";
 
 type View = "onboarding" | "history" | "settings";
@@ -21,9 +21,13 @@ const GEMINI_MODELS = [
   { value: "gemini-3-flash-preview", label: "Gemini 3 Flash" },
   { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro" },
 ];
+const DASHSCOPE_MODELS = [
+  { value: "qwen3-asr-flash", label: "Qwen3 ASR Flash", async: false },
+];
 const DEFAULT_MODELS: Record<string, string> = {
   openai: "gpt-4o-transcribe",
   gemini: "gemini-3-flash-preview",
+  dashscope: "qwen3-asr-flash",
 };
 
 function displayShortcut(s: string): string {
@@ -143,6 +147,7 @@ function App() {
   const [view, setView] = useState<View>("history");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [stats, setStats] = useState<Statistics | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [copied, setCopied] = useState<number | null>(null);
   const [retrying, setRetrying] = useState<number | null>(null);
@@ -159,11 +164,20 @@ function App() {
     setHistory(entries);
   }, []);
 
+  const loadStats = useCallback(async () => {
+    const s = await invoke<Statistics>("get_statistics");
+    setStats(s);
+  }, []);
+
   const loadSettings = useCallback(async () => {
     const s = await invoke<AppSettings>("get_settings");
     setSettings(s);
-    const key = s.provider === "gemini" ? s.gemini_api_key : s.api_key;
-    if (!key) setView("onboarding");
+    const key = s.provider === "gemini" ? s.gemini_api_key : s.provider === "dashscope" ? s.dashscope_api_key : s.api_key;
+    if (!key) {
+      setView("onboarding");
+    } else if (s.api_key_validated) {
+      setApiKeyStatus("ok");
+    }
   }, []);
 
   const checkPermissions = useCallback(async () => {
@@ -196,9 +210,13 @@ function App() {
 
   useEffect(() => {
     loadHistory();
+    loadStats();
     loadSettings();
     checkPermissions();
-    const unlisten1 = listen("history-updated", () => loadHistory());
+    const unlisten1 = listen("history-updated", () => {
+      loadHistory();
+      loadStats();
+    });
     const unlisten2 = listen<string>("transcription-error", (e) => {
       setErrorMsg(e.payload);
       setTimeout(() => setErrorMsg(null), 5000);
@@ -211,7 +229,7 @@ function App() {
       unlisten2.then((f) => f());
       unlisten3.then((f) => f());
     };
-  }, [loadHistory, loadSettings, checkPermissions]);
+  }, [loadHistory, loadStats, loadSettings, checkPermissions]);
 
   // Poll permissions only until all granted
   useEffect(() => {
@@ -248,6 +266,16 @@ function App() {
     setHistory((h) => h.filter((e) => e.id !== id));
   };
 
+  const clearAllHistory = async () => {
+    await invoke("clear_history");
+    setHistory([]);
+  };
+
+  const clearStatistics = async () => {
+    await invoke("clear_statistics");
+    setStats({ input_tokens: 0, output_tokens: 0, total_duration_ms: 0, count: 0 });
+  };
+
   const retryEntry = async (id: number) => {
     setRetrying(id);
     try {
@@ -271,13 +299,24 @@ function App() {
     try {
       await invoke("validate_api_key", { apiKey: key, provider });
       setApiKeyStatus("ok");
+      if (settings) {
+        const updated = { ...settings, api_key_validated: true };
+        setSettings(updated);
+        await invoke("save_settings", { settings: updated });
+      }
     } catch (e) {
       setApiKeyStatus("error");
       setApiKeyError(String(e));
     }
   };
 
-  const activeApiKey = settings ? (settings.provider === "gemini" ? settings.gemini_api_key : settings.api_key) : "";
+  const activeApiKey = settings
+    ? settings.provider === "gemini"
+      ? settings.gemini_api_key
+      : settings.provider === "dashscope"
+        ? settings.dashscope_api_key
+        : settings.api_key
+    : "";
 
   const formatTime = (ts: number) => {
     const d = new Date(ts * 1000);
@@ -338,7 +377,7 @@ function App() {
               value={settings.provider}
               onChange={(e) => {
                 const p = e.target.value;
-                setSettings({ ...settings, provider: p, model: DEFAULT_MODELS[p] || "gpt-4o-transcribe" });
+                setSettings({ ...settings, provider: p, model: DEFAULT_MODELS[p] || "gpt-4o-transcribe", api_key_validated: false });
                 setApiKeyStatus("untested");
                 setApiKeyError(null);
               }}
@@ -347,17 +386,31 @@ function App() {
             >
               <option value="openai">OpenAI</option>
               <option value="gemini">Gemini</option>
+              <option value="dashscope">DashScope</option>
             </select>
             {settings.provider === "gemini" ? (
               <input
                 type="password"
                 value={settings.gemini_api_key}
                 onChange={(e) => {
-                  setSettings({ ...settings, gemini_api_key: e.target.value });
+                  setSettings({ ...settings, gemini_api_key: e.target.value, api_key_validated: false });
                   setApiKeyStatus("untested");
                   setApiKeyError(null);
                 }}
                 placeholder="AIza..."
+                className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+                style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
+              />
+            ) : settings.provider === "dashscope" ? (
+              <input
+                type="password"
+                value={settings.dashscope_api_key}
+                onChange={(e) => {
+                  setSettings({ ...settings, dashscope_api_key: e.target.value, api_key_validated: false });
+                  setApiKeyStatus("untested");
+                  setApiKeyError(null);
+                }}
+                placeholder="sk-..."
                 className="w-full px-3 py-2 rounded-lg text-sm outline-none"
                 style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
               />
@@ -366,7 +419,7 @@ function App() {
                 type="password"
                 value={settings.api_key}
                 onChange={(e) => {
-                  setSettings({ ...settings, api_key: e.target.value });
+                  setSettings({ ...settings, api_key: e.target.value, api_key_validated: false });
                   setApiKeyStatus("untested");
                   setApiKeyError(null);
                 }}
@@ -375,6 +428,19 @@ function App() {
                 style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
               />
             )}
+            <div className="mt-2">
+              <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Model</label>
+              <select
+                value={settings.model}
+                onChange={(e) => setSettings({ ...settings, model: e.target.value })}
+                className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+                style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
+              >
+                {(settings.provider === "gemini" ? GEMINI_MODELS : settings.provider === "dashscope" ? DASHSCOPE_MODELS : OPENAI_MODELS).map((m) => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+            </div>
             <button
               onClick={() => testApiKey(activeApiKey, settings.provider)}
               disabled={!activeApiKey || apiKeyStatus === "testing"}
@@ -481,33 +547,52 @@ function App() {
             <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Provider</label>
             <select value={settings.provider} onChange={(e) => {
               const p = e.target.value;
-              setSettings({ ...settings, provider: p, model: DEFAULT_MODELS[p] || "gpt-4o-transcribe" });
+              setSettings({ ...settings, provider: p, model: DEFAULT_MODELS[p] || "gpt-4o-transcribe", api_key_validated: false });
               setApiKeyStatus("untested");
               setApiKeyError(null);
             }} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}>
               <option value="openai">OpenAI</option>
               <option value="gemini">Gemini</option>
+              <option value="dashscope">DashScope</option>
             </select>
           </div>
           <div>
-            <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>{settings.provider === "gemini" ? "Gemini API Key" : "OpenAI API Key"}</label>
+            <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>
+              {settings.provider === "gemini" ? "Gemini API Key" : settings.provider === "dashscope" ? "DashScope API Key" : "OpenAI API Key"}
+            </label>
             {settings.provider === "gemini" ? (
               <input type="password" value={settings.gemini_api_key} onChange={(e) => {
-                setSettings({ ...settings, gemini_api_key: e.target.value });
+                setSettings({ ...settings, gemini_api_key: e.target.value, api_key_validated: false });
                 setApiKeyStatus("untested");
                 setApiKeyError(null);
               }} placeholder="AIza..." className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
+            ) : settings.provider === "dashscope" ? (
+              <input type="password" value={settings.dashscope_api_key} onChange={(e) => {
+                setSettings({ ...settings, dashscope_api_key: e.target.value, api_key_validated: false });
+                setApiKeyStatus("untested");
+                setApiKeyError(null);
+              }} placeholder="sk-..." className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
             ) : (
               <input type="password" value={settings.api_key} onChange={(e) => {
-                setSettings({ ...settings, api_key: e.target.value });
+                setSettings({ ...settings, api_key: e.target.value, api_key_validated: false });
                 setApiKeyStatus("untested");
                 setApiKeyError(null);
               }} placeholder="sk-..." className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
             )}
+          </div>
+          <div>
+            <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Model</label>
+            <select value={settings.model} onChange={(e) => setSettings({ ...settings, model: e.target.value })} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}>
+              {(settings.provider === "gemini" ? GEMINI_MODELS : settings.provider === "dashscope" ? DASHSCOPE_MODELS : OPENAI_MODELS).map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
             <button
               onClick={() => testApiKey(activeApiKey, settings.provider)}
               disabled={!activeApiKey || apiKeyStatus === "testing"}
-              className="w-full mt-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
+              className="w-full px-3 py-1.5 rounded-lg text-xs font-medium"
               style={{
                 background: apiKeyStatus === "ok" ? "#34c75920" : "var(--border)",
                 color: apiKeyStatus === "ok" ? "#34c759" : "var(--text)",
@@ -520,14 +605,6 @@ function App() {
             {apiKeyStatus === "error" && apiKeyError && (
               <p className="text-xs mt-1" style={{ color: "#ff453a" }}>{apiKeyError}</p>
             )}
-          </div>
-          <div>
-            <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Model</label>
-            <select value={settings.model} onChange={(e) => setSettings({ ...settings, model: e.target.value })} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}>
-              {(settings.provider === "gemini" ? GEMINI_MODELS : OPENAI_MODELS).map((m) => (
-                <option key={m.value} value={m.value}>{m.label}</option>
-              ))}
-            </select>
           </div>
           <div>
             <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Language</label>
@@ -574,6 +651,40 @@ function App() {
             )}
           </div>
           <div>
+            <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Recording Mode</label>
+            <select value={settings.recording_mode || "toggle"} onChange={(e) => setSettings({ ...settings, recording_mode: e.target.value as "toggle" | "hold" })} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}>
+              <option value="toggle">Toggle (press to start/stop)</option>
+              <option value="hold">Hold (hold to record)</option>
+            </select>
+            <p className="text-xs mt-1" style={{ color: "var(--text-secondary)" }}>
+              {(settings.recording_mode === "hold") ? "Hold to record, release to send" : "Press to start, press again to stop"}
+            </p>
+          </div>
+          <div>
+            <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Trigger Delay</label>
+            <select value={settings.trigger_delay_ms || 400} onChange={(e) => setSettings({ ...settings, trigger_delay_ms: Number(e.target.value) })} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}>
+              <option value={200}>200ms (fast)</option>
+              <option value={400}>400ms (default)</option>
+              <option value={600}>600ms</option>
+              <option value={800}>800ms</option>
+            </select>
+            <p className="text-xs mt-1" style={{ color: "var(--text-secondary)" }}>
+              {(settings.recording_mode === "hold") ? "Hold longer than this to start recording" : "Release within this time to trigger"}
+            </p>
+          </div>
+          <div>
+            <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Max Recording Time</label>
+            <select value={settings.max_recording_seconds || 60} onChange={(e) => setSettings({ ...settings, max_recording_seconds: Number(e.target.value) })} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}>
+              <option value={30}>30 seconds</option>
+              <option value={60}>60 seconds</option>
+              <option value={120}>2 minutes</option>
+              <option value={300}>5 minutes</option>
+            </select>
+            <p className="text-xs mt-1" style={{ color: "var(--text-secondary)" }}>
+              Auto-stop when limit reached
+            </p>
+          </div>
+          <div>
             <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Microphone</label>
             {microphoneOk ? (
               <div className="px-3 py-2 rounded-lg text-sm" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "#34c759" }}>Enabled</div>
@@ -597,6 +708,27 @@ function App() {
               </button>
             )}
           </div>
+          <div>
+            <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>History Limit</label>
+            <select value={settings.history_limit} onChange={(e) => setSettings({ ...settings, history_limit: Number(e.target.value) })} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}>
+              <option value={10}>10 items</option>
+              <option value={25}>25 items</option>
+              <option value={50}>50 items</option>
+              <option value={100}>100 items</option>
+              <option value={999999}>All</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Data Management</label>
+            <div className="space-y-2">
+              <button onClick={clearAllHistory} className="w-full px-3 py-2 rounded-lg text-sm font-medium" style={{ background: "#ff453a20", border: "1px solid #ff453a40", color: "#ff453a" }}>
+                Clear History
+              </button>
+              <button onClick={clearStatistics} className="w-full px-3 py-2 rounded-lg text-sm font-medium" style={{ background: "#ff9f0a20", border: "1px solid #ff9f0a40", color: "#ff9f0a" }}>
+                Clear Statistics
+              </button>
+            </div>
+          </div>
           <p className="text-center text-xs pt-2" style={{ color: "var(--text-secondary)", opacity: 0.5 }}>v{__APP_VERSION__}</p>
         </div>
       </div>
@@ -604,6 +736,15 @@ function App() {
   }
 
   // History
+  const historyLimit = settings?.history_limit || 50;
+  const displayedHistory = history.slice(0, historyLimit);
+
+  const formatStatsDuration = (ms: number) => {
+    const mins = Math.floor(ms / 60000);
+    const secs = Math.round((ms % 60000) / 1000);
+    return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+  };
+
   return (
     <div className="flex flex-col h-screen max-w-md mx-auto">
       <div className="flex items-center justify-between p-4 pb-2" style={{ background: "var(--bg)" }}>
@@ -636,7 +777,7 @@ function App() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto px-4 pb-4 pt-2">
+      <div className="flex-1 overflow-y-auto px-4 pb-2 pt-2">
       {errorMsg && (
         <div className="mb-3 px-3 py-2 rounded-lg text-xs" style={{ background: "#ff453a20", border: "1px solid #ff453a40", color: "#ff453a" }}>
           Transcription failed: {errorMsg}
@@ -653,7 +794,7 @@ function App() {
         </p>
       ) : (
         <div className="space-y-2">
-          {history.map((entry) => {
+          {displayedHistory.map((entry) => {
             const isFailed = entry.text.startsWith("[Error:");
             return (
             <div key={entry.id} className="rounded-lg p-3" style={{ background: "var(--card)", border: isFailed ? "1px solid #ff453a40" : "1px solid var(--border)" }}>
@@ -722,6 +863,15 @@ function App() {
         </div>
       )}
       </div>
+
+      {stats && stats.count > 0 && (
+        <div className="px-4 py-2 flex justify-around text-xs" style={{ background: "var(--bg)", borderTop: "1px solid var(--border)" }}>
+          <span>📥 {stats.input_tokens.toLocaleString()}</span>
+          <span>📤 {stats.output_tokens.toLocaleString()}</span>
+          <span>⏱ {formatStatsDuration(stats.total_duration_ms)}</span>
+          <span>📊 {stats.count}</span>
+        </div>
+      )}
     </div>
   );
 }
