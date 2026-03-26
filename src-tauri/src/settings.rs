@@ -11,6 +11,10 @@ pub struct AppSettings {
     pub gemini_api_key: String,
     #[serde(default)]
     pub dashscope_api_key: String,
+    #[serde(default)]
+    pub custom_api_url: String,
+    #[serde(default)]
+    pub custom_api_key: String,
     #[serde(default = "default_model")]
     pub model: String,
     #[serde(default = "default_language")]
@@ -73,6 +77,8 @@ impl Default for AppSettings {
             api_key: default_api_key(),
             gemini_api_key: String::new(),
             dashscope_api_key: String::new(),
+            custom_api_url: String::new(),
+            custom_api_key: String::new(),
             model: default_model(),
             language: default_language(),
             shortcut: default_shortcut(),

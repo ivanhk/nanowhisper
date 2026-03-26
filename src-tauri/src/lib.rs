@@ -557,10 +557,20 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
     let active_key = match settings.provider.as_str() {
         "gemini" => settings.gemini_api_key.clone(),
         "dashscope" => settings.dashscope_api_key.clone(),
+        "custom" => settings.custom_api_key.clone(),
         _ => settings.api_key.clone(),
     };
-    if active_key.is_empty() {
+    if active_key.is_empty() && settings.provider != "custom" {
         log::error!("API key not configured!");
+        close_overlay(app_handle);
+        if let Some(w) = app_handle.get_webview_window("main") {
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+        return;
+    }
+    if settings.provider == "custom" && settings.custom_api_url.is_empty() {
+        log::error!("Custom API URL not configured!");
         close_overlay(app_handle);
         if let Some(w) = app_handle.get_webview_window("main") {
             let _ = w.show();
@@ -575,6 +585,8 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
     let language = settings.language.clone();
     let http_client = app_handle.state::<reqwest::Client>().inner().clone();
     let provider = settings.provider.clone();
+    let custom_api_url = settings.custom_api_url.clone();
+    let custom_api_key = settings.custom_api_key.clone();
 
     log::info!("Calling {} API with model={}...", provider, model);
 
@@ -597,6 +609,10 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
             }
             "dashscope" => {
                 transcribe::transcribe_dashscope(&http_client, &active_key, &model, wav_data.clone(), lang).await
+            }
+            "custom" => {
+                let api_key = if custom_api_key.is_empty() { None } else { Some(custom_api_key.as_str()) };
+                transcribe::transcribe_custom(&http_client, &custom_api_url, api_key, &model, wav_data.clone(), lang).await
             }
             _ => {
                 transcribe::transcribe_audio(&http_client, &active_key, &model, wav_data.clone(), lang).await

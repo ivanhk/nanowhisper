@@ -38,6 +38,39 @@ pub async fn validate_api_key(client: &reqwest::Client, api_key: &str) -> Result
     Ok(())
 }
 
+pub async fn validate_custom_api_key(client: &reqwest::Client, url: &str, api_key: Option<&str>) -> Result<()> {
+    let wav = generate_silent_wav();
+    let file_part = multipart::Part::bytes(wav)
+        .file_name("test.wav")
+        .mime_str("audio/wav")?;
+    let form = multipart::Form::new()
+        .part("file", file_part)
+        .text("model", "test".to_string());
+
+    let mut req = client.post(url);
+    if let Some(key) = api_key {
+        if !key.is_empty() {
+            req = req.bearer_auth(key);
+        }
+    }
+    
+    let resp = req
+        .multipart(form)
+        .send()
+        .await
+        .context("Network error")?;
+
+    let status = resp.status();
+    if status.as_u16() == 401 {
+        anyhow::bail!("Invalid API key");
+    }
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("API error {}: {}", status, body);
+    }
+    Ok(())
+}
+
 /// Generate a minimal valid WAV file (0.5s silence, 16kHz mono 16-bit).
 fn generate_silent_wav() -> Vec<u8> {
     let sample_rate: u32 = 16000;
@@ -105,6 +138,65 @@ pub async fn transcribe_audio(
 
     let input_tokens = json["usage"]["input_tokens"].as_i64();
     let output_tokens = json["usage"]["output_tokens"].as_i64();
+
+    Ok(TranscriptionResult {
+        text,
+        input_tokens,
+        output_tokens,
+    })
+}
+
+pub async fn transcribe_custom(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: Option<&str>,
+    model: &str,
+    wav_data: Vec<u8>,
+    language: Option<&str>,
+) -> Result<TranscriptionResult> {
+    let file_part = multipart::Part::bytes(wav_data)
+        .file_name("audio.wav")
+        .mime_str("audio/wav")?;
+
+    let mut form = multipart::Form::new()
+        .part("file", file_part)
+        .text("model", model.to_string());
+
+    if let Some(lang) = language {
+        if lang != "auto" {
+            form = form.text("language", lang.to_string());
+        }
+    }
+
+    let mut req = client.post(url);
+    if let Some(key) = api_key {
+        if !key.is_empty() {
+            req = req.bearer_auth(key);
+        }
+    }
+
+    let resp = req
+        .multipart(form)
+        .send()
+        .await
+        .context("Failed to send transcription request")?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("API error {}: {}", status, body);
+    }
+
+    let json: serde_json::Value = resp.json().await.context("Failed to parse API response")?;
+    let text = json["text"]
+        .as_str()
+        .context("Missing 'text' field in response")?
+        .to_string();
+
+    let input_tokens = json["usage"]["input_tokens"].as_i64()
+        .or_else(|| json["usage"]["prompt_tokens"].as_i64());
+    let output_tokens = json["usage"]["output_tokens"].as_i64()
+        .or_else(|| json["usage"]["completion_tokens"].as_i64());
 
     Ok(TranscriptionResult {
         text,

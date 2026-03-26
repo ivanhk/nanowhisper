@@ -73,7 +73,12 @@ pub fn request_microphone() -> bool {
 }
 
 #[tauri::command]
-pub async fn validate_api_key(app: AppHandle, api_key: String, provider: String) -> Result<(), String> {
+pub async fn validate_api_key(
+    app: AppHandle,
+    api_key: String,
+    provider: String,
+    custom_url: Option<String>,
+) -> Result<(), String> {
     let client = app
         .try_state::<reqwest::Client>()
         .ok_or("HTTP client not initialized")?;
@@ -84,6 +89,12 @@ pub async fn validate_api_key(app: AppHandle, api_key: String, provider: String)
         "dashscope" => crate::transcribe::validate_dashscope_api_key(&client, &api_key)
             .await
             .map_err(|e| e.to_string()),
+        "custom" => {
+            let url = custom_url.ok_or("Custom URL is required")?;
+            crate::transcribe::validate_custom_api_key(&client, &url, Some(&api_key))
+                .await
+                .map_err(|e| e.to_string())
+        }
         _ => crate::transcribe::validate_api_key(&client, &api_key)
             .await
             .map_err(|e| e.to_string()),
@@ -153,10 +164,14 @@ pub async fn retry_transcription(
     let active_key = match settings.provider.as_str() {
         "gemini" => settings.gemini_api_key.clone(),
         "dashscope" => settings.dashscope_api_key.clone(),
+        "custom" => settings.custom_api_key.clone(),
         _ => settings.api_key.clone(),
     };
-    if active_key.is_empty() {
+    if active_key.is_empty() && settings.provider != "custom" {
         return Err("API key not configured".into());
+    }
+    if settings.provider == "custom" && settings.custom_api_url.is_empty() {
+        return Err("Custom API URL not configured".into());
     }
 
     let lang = if settings.language == "auto" {
@@ -176,6 +191,12 @@ pub async fn retry_transcription(
         "dashscope" => transcribe::transcribe_dashscope(&client, &active_key, &settings.model, wav_data, lang)
             .await
             .map_err(|e| e.to_string())?,
+        "custom" => {
+            let api_key = if settings.custom_api_key.is_empty() { None } else { Some(settings.custom_api_key.as_str()) };
+            transcribe::transcribe_custom(&client, &settings.custom_api_url, api_key, &settings.model, wav_data, lang)
+                .await
+                .map_err(|e| e.to_string())?
+        }
         _ => transcribe::transcribe_audio(&client, &active_key, &settings.model, wav_data, lang)
             .await
             .map_err(|e| e.to_string())?,

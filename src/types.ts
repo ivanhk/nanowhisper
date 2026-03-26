@@ -21,6 +21,8 @@ export interface AppSettings {
   api_key: string;
   gemini_api_key: string;
   dashscope_api_key: string;
+  custom_api_url: string;
+  custom_api_key: string;
   model: string;
   language: string;
   shortcut: string;
