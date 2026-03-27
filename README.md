@@ -26,7 +26,7 @@
 
 NanoWhisper is a minimal desktop speech-to-text app. Press a shortcut, speak, and the transcribed text is auto-pasted into your active application. That's it.
 
-Powered by OpenAI Whisper API, Google Gemini API, and DashScope. Built with Tauri v2.
+Powered by OpenAI Whisper API, Google Gemini API, DashScope, and Custom Whisper API endpoints. Built with Tauri v2.
 
 ## How It Works
 

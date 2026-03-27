@@ -38,14 +38,14 @@ pub async fn validate_api_key(client: &reqwest::Client, api_key: &str) -> Result
     Ok(())
 }
 
-pub async fn validate_custom_api_key(client: &reqwest::Client, url: &str, api_key: Option<&str>) -> Result<()> {
+pub async fn validate_custom_api_key(client: &reqwest::Client, url: &str, api_key: Option<&str>, model: &str) -> Result<()> {
     let wav = generate_silent_wav();
     let file_part = multipart::Part::bytes(wav)
         .file_name("test.wav")
         .mime_str("audio/wav")?;
     let form = multipart::Form::new()
         .part("file", file_part)
-        .text("model", "test".to_string());
+        .text("model", model.to_string());
 
     let mut req = client.post(url);
     if let Some(key) = api_key {
@@ -349,13 +349,13 @@ fn language_code_to_name(code: &str) -> &str {
 
 const DASHSCOPE_BASE64_LIMIT: usize = 10 * 1024 * 1024;
 
-pub async fn validate_dashscope_api_key(client: &reqwest::Client, api_key: &str) -> Result<()> {
+pub async fn validate_dashscope_api_key(client: &reqwest::Client, api_key: &str, model: &str) -> Result<()> {
     let wav = generate_silent_wav();
     let b64 = base64::engine::general_purpose::STANDARD.encode(&wav);
     let data_uri = format!("data:audio/wav;base64,{}", b64);
 
     let body = serde_json::json!({
-        "model": "qwen3-asr-flash",
+        "model": model,
         "messages": [{
             "role": "user",
             "content": [{

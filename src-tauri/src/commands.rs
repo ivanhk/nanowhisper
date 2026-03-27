@@ -78,6 +78,7 @@ pub async fn validate_api_key(
     api_key: String,
     provider: String,
     custom_url: Option<String>,
+    model: String,
 ) -> Result<(), String> {
     let client = app
         .try_state::<reqwest::Client>()
@@ -86,12 +87,12 @@ pub async fn validate_api_key(
         "gemini" => crate::transcribe::validate_gemini_api_key(&client, &api_key)
             .await
             .map_err(|e| e.to_string()),
-        "dashscope" => crate::transcribe::validate_dashscope_api_key(&client, &api_key)
+        "dashscope" => crate::transcribe::validate_dashscope_api_key(&client, &api_key, &model)
             .await
             .map_err(|e| e.to_string()),
         "custom" => {
             let url = custom_url.ok_or("Custom URL is required")?;
-            crate::transcribe::validate_custom_api_key(&client, &url, Some(&api_key))
+            crate::transcribe::validate_custom_api_key(&client, &url, Some(&api_key), &model)
                 .await
                 .map_err(|e| e.to_string())
         }

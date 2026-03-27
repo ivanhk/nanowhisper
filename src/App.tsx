@@ -298,7 +298,7 @@ function App() {
     setApiKeyStatus("testing");
     setApiKeyError(null);
     try {
-      await invoke("validate_api_key", { apiKey: key, provider, customUrl });
+      await invoke("validate_api_key", { apiKey: key, provider, customUrl, model: settings?.model });
       setApiKeyStatus("ok");
       if (settings) {
         const updated = { ...settings, api_key_validated: true };
@@ -390,7 +390,7 @@ function App() {
               <option value="openai">OpenAI</option>
               <option value="gemini">Gemini</option>
               <option value="dashscope">DashScope</option>
-              <option value="custom">Custom</option>
+              <option value="custom">Custom (Whisper API)</option>
             </select>
             {settings.provider === "custom" ? (
               <>
@@ -596,7 +596,7 @@ function App() {
               <option value="openai">OpenAI</option>
               <option value="gemini">Gemini</option>
               <option value="dashscope">DashScope</option>
-              <option value="custom">Custom</option>
+              <option value="custom">Custom (Whisper API)</option>
             </select>
           </div>
           {settings.provider === "custom" ? (
