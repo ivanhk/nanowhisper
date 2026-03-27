@@ -74,15 +74,14 @@ pub fn request_microphone() -> bool {
 
 #[tauri::command]
 pub async fn validate_api_key(
-    app: AppHandle,
+    _app: AppHandle,
     api_key: String,
     provider: String,
     custom_url: Option<String>,
     model: String,
 ) -> Result<(), String> {
-    let client = app
-        .try_state::<reqwest::Client>()
-        .ok_or("HTTP client not initialized")?;
+    let timeout_seconds = settings::get_settings().model_timeout_seconds;
+    let client = crate::build_http_client(timeout_seconds)?;
     match provider.as_str() {
         "gemini" => crate::transcribe::validate_gemini_api_key(&client, &api_key)
             .await
@@ -181,9 +180,7 @@ pub async fn retry_transcription(
         Some(settings.language.as_str())
     };
 
-    let client = app
-        .try_state::<reqwest::Client>()
-        .ok_or("HTTP client not initialized")?;
+    let client = crate::build_http_client(settings.model_timeout_seconds)?;
 
     let result = match settings.provider.as_str() {
         "gemini" => transcribe::transcribe_gemini(&client, &active_key, &settings.model, wav_data, lang)

@@ -37,6 +37,8 @@ pub struct AppSettings {
     pub trigger_delay_ms: i64,
     #[serde(default = "default_max_recording_seconds")]
     pub max_recording_seconds: i64,
+    #[serde(default = "default_model_timeout_seconds")]
+    pub model_timeout_seconds: i64,
 }
 
 fn default_provider() -> String {
@@ -69,6 +71,13 @@ fn default_trigger_delay_ms() -> i64 {
 fn default_max_recording_seconds() -> i64 {
     60
 }
+fn default_model_timeout_seconds() -> i64 {
+    30
+}
+
+pub fn normalize_model_timeout_seconds(timeout_seconds: i64) -> i64 {
+    timeout_seconds.clamp(15, 600)
+}
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -90,6 +99,7 @@ impl Default for AppSettings {
             recording_mode: default_recording_mode(),
             trigger_delay_ms: default_trigger_delay_ms(),
             max_recording_seconds: default_max_recording_seconds(),
+            model_timeout_seconds: default_model_timeout_seconds(),
         }
     }
 }
@@ -101,7 +111,12 @@ fn settings_path() -> PathBuf {
 pub fn get_settings() -> AppSettings {
     let path = settings_path();
     match std::fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str::<AppSettings>(&content).unwrap_or_default(),
+        Ok(content) => {
+            let mut settings = serde_json::from_str::<AppSettings>(&content).unwrap_or_default();
+            settings.model_timeout_seconds =
+                normalize_model_timeout_seconds(settings.model_timeout_seconds);
+            settings
+        }
         Err(_) => AppSettings::default(),
     }
 }
@@ -110,7 +125,10 @@ pub fn save_settings(settings: &AppSettings) {
     let dir = crate::data_dir();
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("settings.json");
-    if let Ok(json) = serde_json::to_string_pretty(settings) {
+    let mut normalized = settings.clone();
+    normalized.model_timeout_seconds =
+        normalize_model_timeout_seconds(normalized.model_timeout_seconds);
+    if let Ok(json) = serde_json::to_string_pretty(&normalized) {
         let _ = std::fs::write(&path, json);
     }
 }

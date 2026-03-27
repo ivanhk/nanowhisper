@@ -32,6 +32,14 @@ const OVERLAY_HEIGHT: f64 = 48.0;
 const OVERLAY_BOTTOM_OFFSET: f64 = 80.0;
 const PASTE_DELAY_MS: u64 = 350;
 
+pub fn build_http_client(timeout_seconds: i64) -> Result<reqwest::Client, String> {
+    let timeout_seconds = settings::normalize_model_timeout_seconds(timeout_seconds);
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_seconds as u64))
+        .build()
+        .map_err(|e| format!("Failed to initialize HTTP client: {}", e))
+}
+
 /// Returns (x, y, width, height) of the screen containing the cursor,
 /// in logical coordinates with top-left origin.
 pub fn cursor_screen_bounds(app_handle: &tauri::AppHandle) -> (f64, f64, f64, f64) {
@@ -178,10 +186,6 @@ pub fn run() {
             // Initialize audio recorder
             let recorder = Arc::new(AudioRecorder::new());
             app.manage(recorder.clone());
-
-            // Initialize shared HTTP client
-            let http_client = reqwest::Client::new();
-            app.manage(http_client);
 
             // Initialize enigo if accessibility is already granted
             if paste::is_accessibility_trusted() {
@@ -583,7 +587,15 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
     let history = history.inner().clone();
     let model = settings.model.clone();
     let language = settings.language.clone();
-    let http_client = app_handle.state::<reqwest::Client>().inner().clone();
+    let http_client = match build_http_client(settings.model_timeout_seconds) {
+        Ok(client) => client,
+        Err(e) => {
+            log::error!("{}", e);
+            close_overlay(app_handle);
+            let _ = app_handle.emit("transcription-error", e);
+            return;
+        }
+    };
     let provider = settings.provider.clone();
     let custom_api_url = settings.custom_api_url.clone();
     let custom_api_key = settings.custom_api_key.clone();

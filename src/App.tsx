@@ -753,6 +753,19 @@ function App() {
             </p>
           </div>
           <div>
+            <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Model Timeout</label>
+            <select value={settings.model_timeout_seconds || 120} onChange={(e) => setSettings({ ...settings, model_timeout_seconds: Number(e.target.value) })} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}>
+              <option value={15}>15 seconds</option>
+              <option value={30}>30 seconds</option>
+              <option value={60}>60 seconds</option>
+              <option value={120}>2 minutes</option>
+              <option value={300}>5 minutes</option>
+            </select>
+            <p className="text-xs mt-1" style={{ color: "var(--text-secondary)" }}>
+              Limits how long transcription requests can wait before failing
+            </p>
+          </div>
+          <div>
             <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Microphone</label>
             {microphoneOk ? (
               <div className="px-3 py-2 rounded-lg text-sm" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "#34c759" }}>Enabled</div>

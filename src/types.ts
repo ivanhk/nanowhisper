@@ -34,4 +34,5 @@ export interface AppSettings {
   recording_mode: "toggle" | "hold";
   trigger_delay_ms: number;
   max_recording_seconds: number;
+  model_timeout_seconds: number;
 }
