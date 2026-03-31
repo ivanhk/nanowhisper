@@ -106,22 +106,20 @@ impl AudioRecorder {
 
             let mut buffer: Vec<f32> = Vec::new();
 
-            let drain_audio =
-                |audio_rx: &mpsc::Receiver<Vec<f32>>,
-                 buffer: &mut Vec<f32>,
-                 app_handle: &AppHandle| {
-                    while let Ok(chunk) = audio_rx.try_recv() {
-                        buffer.extend_from_slice(&chunk);
+            let drain_audio = |audio_rx: &mpsc::Receiver<Vec<f32>>,
+                               buffer: &mut Vec<f32>,
+                               app_handle: &AppHandle| {
+                while let Ok(chunk) = audio_rx.try_recv() {
+                    buffer.extend_from_slice(&chunk);
 
-                        if buffer.len() % 512 < chunk.len() {
-                            let recent = &buffer[buffer.len().saturating_sub(512)..];
-                            let rms = (recent.iter().map(|s| s * s).sum::<f32>()
-                                / recent.len() as f32)
-                                .sqrt();
-                            let _ = app_handle.emit("audio-level", rms.min(1.0));
-                        }
+                    if buffer.len() % 512 < chunk.len() {
+                        let recent = &buffer[buffer.len().saturating_sub(512)..];
+                        let rms = (recent.iter().map(|s| s * s).sum::<f32>() / recent.len() as f32)
+                            .sqrt();
+                        let _ = app_handle.emit("audio-level", rms.min(1.0));
                     }
-                };
+                }
+            };
 
             loop {
                 // Drain audio data

@@ -2,7 +2,13 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import type { HistoryEntry, AppSettings, Statistics } from "./types";
+import type {
+  HistoryEntry,
+  AppSettings,
+  Statistics,
+  ProviderId,
+  ProviderSettings,
+} from "./types";
 import logoUrl from "./assets/logo.png";
 
 type View = "onboarding" | "history" | "settings";
@@ -24,11 +30,49 @@ const GEMINI_MODELS = [
 const DASHSCOPE_MODELS = [
   { value: "qwen3-asr-flash", label: "Qwen3 ASR Flash", async: false },
 ];
-const DEFAULT_MODELS: Record<string, string> = {
+const DEFAULT_MODELS: Record<ProviderId, string> = {
   openai: "gpt-4o-transcribe",
   gemini: "gemini-3-flash-preview",
   dashscope: "qwen3-asr-flash",
+  custom: "whisper-1",
 };
+
+function getProviderSettings(settings: AppSettings, provider: ProviderId = settings.provider): ProviderSettings {
+  return settings.providers[provider];
+}
+
+function updateProviderSettings(
+  settings: AppSettings,
+  provider: ProviderId,
+  updates: Partial<ProviderSettings>,
+): AppSettings {
+  return {
+    ...settings,
+    providers: {
+      ...settings.providers,
+      [provider]: {
+        ...settings.providers[provider],
+        ...updates,
+      },
+    },
+  };
+}
+
+function getModelOptions(provider: ProviderId) {
+  switch (provider) {
+    case "gemini":
+      return GEMINI_MODELS;
+    case "dashscope":
+      return DASHSCOPE_MODELS;
+    default:
+      return OPENAI_MODELS;
+  }
+}
+
+function hasRequiredProviderConfig(settings: AppSettings, provider: ProviderId = settings.provider): boolean {
+  const config = getProviderSettings(settings, provider);
+  return provider === "custom" ? Boolean(config.api_url.trim()) : Boolean(config.api_key.trim());
+}
 
 function displayShortcut(s: string): string {
   if (!s) return defaultHotkey;
@@ -172,11 +216,75 @@ function App() {
   const loadSettings = useCallback(async () => {
     const s = await invoke<AppSettings>("get_settings");
     setSettings(s);
-    const key = s.provider === "gemini" ? s.gemini_api_key : s.provider === "dashscope" ? s.dashscope_api_key : s.api_key;
-    if (!key) {
+    if (!hasRequiredProviderConfig(s)) {
       setView("onboarding");
-    } else if (s.api_key_validated) {
+    }
+    setApiKeyStatus(getProviderSettings(s).validated ? "ok" : "untested");
+    setApiKeyError(null);
+  }, []);
+
+  const updateCurrentProviderSettings = useCallback(
+    (
+      updates: Partial<ProviderSettings>,
+      options?: { resetValidation?: boolean },
+    ) => {
+      setSettings((current) => {
+        if (!current) return current;
+        const next = updateProviderSettings(current, current.provider, {
+          ...updates,
+          ...(options?.resetValidation ? { validated: false } : {}),
+        });
+        return next;
+      });
+      if (options?.resetValidation) {
+        setApiKeyStatus("untested");
+        setApiKeyError(null);
+      }
+    },
+    [],
+  );
+
+  const selectProvider = useCallback((provider: ProviderId) => {
+    let nextStatus: "untested" | "ok" = "untested";
+    setSettings((current) => {
+      if (!current) return current;
+      nextStatus = getProviderSettings(current, provider).validated ? "ok" : "untested";
+      return {
+        ...current,
+        provider,
+      };
+    });
+    setApiKeyStatus(nextStatus);
+    setApiKeyError(null);
+  }, []);
+
+  const testApiKey = useCallback(async (
+    provider: ProviderId,
+    config: ProviderSettings,
+  ) => {
+    if (!config.api_key && provider !== "custom") return;
+    if (provider === "custom" && !config.api_url) return;
+    setApiKeyStatus("testing");
+    setApiKeyError(null);
+    try {
+      await invoke("validate_api_key", {
+        apiKey: config.api_key,
+        provider,
+        customUrl: provider === "custom" ? config.api_url : undefined,
+        model: config.model,
+      });
       setApiKeyStatus("ok");
+      setSettings((current) => {
+        if (!current) return current;
+        const updated = updateProviderSettings(current, provider, { validated: true });
+        invoke("save_settings", { settings: updated }).catch((error) => {
+          console.error("Failed to save settings:", error);
+        });
+        return updated;
+      });
+    } catch (e) {
+      setApiKeyStatus("error");
+      setApiKeyError(String(e));
     }
   }, []);
 
@@ -292,34 +400,11 @@ function App() {
     await invoke("save_settings", { settings });
   };
 
-  const testApiKey = async (key: string, provider: string, customUrl?: string) => {
-    if (!key && provider !== "custom") return;
-    if (provider === "custom" && !customUrl) return;
-    setApiKeyStatus("testing");
-    setApiKeyError(null);
-    try {
-      await invoke("validate_api_key", { apiKey: key, provider, customUrl, model: settings?.model });
-      setApiKeyStatus("ok");
-      if (settings) {
-        const updated = { ...settings, api_key_validated: true };
-        setSettings(updated);
-        await invoke("save_settings", { settings: updated });
-      }
-    } catch (e) {
-      setApiKeyStatus("error");
-      setApiKeyError(String(e));
-    }
-  };
-
-  const activeApiKey = settings
-    ? settings.provider === "gemini"
-      ? settings.gemini_api_key
-      : settings.provider === "dashscope"
-        ? settings.dashscope_api_key
-        : settings.provider === "custom"
-          ? settings.custom_api_key
-          : settings.api_key
-    : "";
+  const activeProviderSettings = settings ? getProviderSettings(settings) : null;
+  const activeApiKey = activeProviderSettings?.api_key ?? "";
+  const activeApiUrl = activeProviderSettings?.api_url ?? "";
+  const activeModel = activeProviderSettings?.model ?? "";
+  const canTestProvider = settings ? hasRequiredProviderConfig(settings) : false;
 
   const formatTime = (ts: number) => {
     const d = new Date(ts * 1000);
@@ -379,10 +464,7 @@ function App() {
             <select
               value={settings.provider}
               onChange={(e) => {
-                const p = e.target.value;
-                setSettings({ ...settings, provider: p, model: DEFAULT_MODELS[p] || "", api_key_validated: false });
-                setApiKeyStatus("untested");
-                setApiKeyError(null);
+                selectProvider(e.target.value as ProviderId);
               }}
               className="w-full px-3 py-2 rounded-lg text-sm outline-none mb-2"
               style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
@@ -396,11 +478,9 @@ function App() {
               <>
                 <input
                   type="url"
-                  value={settings.custom_api_url}
+                  value={activeApiUrl}
                   onChange={(e) => {
-                    setSettings({ ...settings, custom_api_url: e.target.value, api_key_validated: false });
-                    setApiKeyStatus("untested");
-                    setApiKeyError(null);
+                    updateCurrentProviderSettings({ api_url: e.target.value }, { resetValidation: true });
                   }}
                   placeholder="https://api.example.com/v1/audio/transcriptions"
                   className="w-full px-3 py-2 rounded-lg text-sm outline-none mb-2"
@@ -408,11 +488,9 @@ function App() {
                 />
                 <input
                   type="password"
-                  value={settings.custom_api_key}
+                  value={activeApiKey}
                   onChange={(e) => {
-                    setSettings({ ...settings, custom_api_key: e.target.value, api_key_validated: false });
-                    setApiKeyStatus("untested");
-                    setApiKeyError(null);
+                    updateCurrentProviderSettings({ api_key: e.target.value }, { resetValidation: true });
                   }}
                   placeholder="API Key (optional for local services)"
                   className="w-full px-3 py-2 rounded-lg text-sm outline-none"
@@ -422,11 +500,9 @@ function App() {
             ) : settings.provider === "gemini" ? (
               <input
                 type="password"
-                value={settings.gemini_api_key}
+                value={activeApiKey}
                 onChange={(e) => {
-                  setSettings({ ...settings, gemini_api_key: e.target.value, api_key_validated: false });
-                  setApiKeyStatus("untested");
-                  setApiKeyError(null);
+                  updateCurrentProviderSettings({ api_key: e.target.value }, { resetValidation: true });
                 }}
                 placeholder="AIza..."
                 className="w-full px-3 py-2 rounded-lg text-sm outline-none"
@@ -435,11 +511,9 @@ function App() {
             ) : settings.provider === "dashscope" ? (
               <input
                 type="password"
-                value={settings.dashscope_api_key}
+                value={activeApiKey}
                 onChange={(e) => {
-                  setSettings({ ...settings, dashscope_api_key: e.target.value, api_key_validated: false });
-                  setApiKeyStatus("untested");
-                  setApiKeyError(null);
+                  updateCurrentProviderSettings({ api_key: e.target.value }, { resetValidation: true });
                 }}
                 placeholder="sk-..."
                 className="w-full px-3 py-2 rounded-lg text-sm outline-none"
@@ -448,11 +522,9 @@ function App() {
             ) : (
               <input
                 type="password"
-                value={settings.api_key}
+                value={activeApiKey}
                 onChange={(e) => {
-                  setSettings({ ...settings, api_key: e.target.value, api_key_validated: false });
-                  setApiKeyStatus("untested");
-                  setApiKeyError(null);
+                  updateCurrentProviderSettings({ api_key: e.target.value }, { resetValidation: true });
                 }}
                 placeholder="sk-proj-..."
                 className="w-full px-3 py-2 rounded-lg text-sm outline-none"
@@ -464,34 +536,34 @@ function App() {
               {settings.provider === "custom" ? (
                 <input
                   type="text"
-                  value={settings.model}
-                  onChange={(e) => setSettings({ ...settings, model: e.target.value })}
-                  placeholder="whisper-1"
+                  value={activeModel}
+                  onChange={(e) => updateCurrentProviderSettings({ model: e.target.value }, { resetValidation: true })}
+                  placeholder={DEFAULT_MODELS.custom}
                   className="w-full px-3 py-2 rounded-lg text-sm outline-none"
                   style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
                 />
               ) : (
                 <select
-                  value={settings.model}
-                  onChange={(e) => setSettings({ ...settings, model: e.target.value })}
+                  value={activeModel}
+                  onChange={(e) => updateCurrentProviderSettings({ model: e.target.value }, { resetValidation: true })}
                   className="w-full px-3 py-2 rounded-lg text-sm outline-none"
                   style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
                 >
-                  {(settings.provider === "gemini" ? GEMINI_MODELS : settings.provider === "dashscope" ? DASHSCOPE_MODELS : OPENAI_MODELS).map((m) => (
+                  {getModelOptions(settings.provider).map((m) => (
                     <option key={m.value} value={m.value}>{m.label}</option>
                   ))}
                 </select>
               )}
             </div>
             <button
-              onClick={() => testApiKey(activeApiKey, settings.provider, settings.provider === "custom" ? settings.custom_api_url : undefined)}
-              disabled={(settings.provider !== "custom" && !activeApiKey) || (settings.provider === "custom" && !settings.custom_api_url) || apiKeyStatus === "testing"}
+              onClick={() => testApiKey(settings.provider, getProviderSettings(settings))}
+              disabled={!canTestProvider || apiKeyStatus === "testing"}
               className="w-full mt-2 px-3 py-2 rounded-lg text-sm font-medium"
               style={{
                 background: apiKeyStatus === "ok" ? "#34c75920" : "var(--accent)",
                 color: apiKeyStatus === "ok" ? "#34c759" : "white",
-                cursor: ((settings.provider !== "custom" && !activeApiKey) || (settings.provider === "custom" && !settings.custom_api_url) || apiKeyStatus === "testing") ? "not-allowed" : "pointer",
-                opacity: ((settings.provider !== "custom" && !activeApiKey) || (settings.provider === "custom" && !settings.custom_api_url) || apiKeyStatus === "testing") ? 0.5 : 1,
+                cursor: (!canTestProvider || apiKeyStatus === "testing") ? "not-allowed" : "pointer",
+                opacity: (!canTestProvider || apiKeyStatus === "testing") ? 0.5 : 1,
               }}
             >
               {apiKeyStatus === "testing" ? "Testing..." : apiKeyStatus === "ok" ? "Connected" : "Test Connection"}
@@ -588,10 +660,7 @@ function App() {
           <div>
             <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Provider</label>
             <select value={settings.provider} onChange={(e) => {
-              const p = e.target.value;
-              setSettings({ ...settings, provider: p, model: DEFAULT_MODELS[p] || "", api_key_validated: false });
-              setApiKeyStatus("untested");
-              setApiKeyError(null);
+              selectProvider(e.target.value as ProviderId);
             }} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}>
               <option value="openai">OpenAI</option>
               <option value="gemini">Gemini</option>
@@ -603,18 +672,14 @@ function App() {
             <>
               <div>
                 <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Endpoint URL</label>
-                <input type="url" value={settings.custom_api_url} onChange={(e) => {
-                  setSettings({ ...settings, custom_api_url: e.target.value, api_key_validated: false });
-                  setApiKeyStatus("untested");
-                  setApiKeyError(null);
+                <input type="url" value={activeApiUrl} onChange={(e) => {
+                  updateCurrentProviderSettings({ api_url: e.target.value }, { resetValidation: true });
                 }} placeholder="https://api.example.com/v1/audio/transcriptions" className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
               </div>
               <div>
                 <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>API Key (optional)</label>
-                <input type="password" value={settings.custom_api_key} onChange={(e) => {
-                  setSettings({ ...settings, custom_api_key: e.target.value, api_key_validated: false });
-                  setApiKeyStatus("untested");
-                  setApiKeyError(null);
+                <input type="password" value={activeApiKey} onChange={(e) => {
+                  updateCurrentProviderSettings({ api_key: e.target.value }, { resetValidation: true });
                 }} placeholder="Optional for local services" className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
               </div>
             </>
@@ -624,22 +689,16 @@ function App() {
                 {settings.provider === "gemini" ? "Gemini API Key" : settings.provider === "dashscope" ? "DashScope API Key" : "OpenAI API Key"}
               </label>
               {settings.provider === "gemini" ? (
-                <input type="password" value={settings.gemini_api_key} onChange={(e) => {
-                  setSettings({ ...settings, gemini_api_key: e.target.value, api_key_validated: false });
-                  setApiKeyStatus("untested");
-                  setApiKeyError(null);
+                <input type="password" value={activeApiKey} onChange={(e) => {
+                  updateCurrentProviderSettings({ api_key: e.target.value }, { resetValidation: true });
                 }} placeholder="AIza..." className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
               ) : settings.provider === "dashscope" ? (
-                <input type="password" value={settings.dashscope_api_key} onChange={(e) => {
-                  setSettings({ ...settings, dashscope_api_key: e.target.value, api_key_validated: false });
-                  setApiKeyStatus("untested");
-                  setApiKeyError(null);
+                <input type="password" value={activeApiKey} onChange={(e) => {
+                  updateCurrentProviderSettings({ api_key: e.target.value }, { resetValidation: true });
                 }} placeholder="sk-..." className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
               ) : (
-                <input type="password" value={settings.api_key} onChange={(e) => {
-                  setSettings({ ...settings, api_key: e.target.value, api_key_validated: false });
-                  setApiKeyStatus("untested");
-                  setApiKeyError(null);
+                <input type="password" value={activeApiKey} onChange={(e) => {
+                  updateCurrentProviderSettings({ api_key: e.target.value }, { resetValidation: true });
                 }} placeholder="sk-..." className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
               )}
             </div>
@@ -647,10 +706,10 @@ function App() {
           <div>
             <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Model</label>
             {settings.provider === "custom" ? (
-              <input type="text" value={settings.model} onChange={(e) => setSettings({ ...settings, model: e.target.value })} placeholder="whisper-1" className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
+              <input type="text" value={activeModel} onChange={(e) => updateCurrentProviderSettings({ model: e.target.value }, { resetValidation: true })} placeholder={DEFAULT_MODELS.custom} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
             ) : (
-              <select value={settings.model} onChange={(e) => setSettings({ ...settings, model: e.target.value })} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}>
-                {(settings.provider === "gemini" ? GEMINI_MODELS : settings.provider === "dashscope" ? DASHSCOPE_MODELS : OPENAI_MODELS).map((m) => (
+              <select value={activeModel} onChange={(e) => updateCurrentProviderSettings({ model: e.target.value }, { resetValidation: true })} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}>
+                {getModelOptions(settings.provider).map((m) => (
                   <option key={m.value} value={m.value}>{m.label}</option>
                 ))}
               </select>
@@ -658,14 +717,14 @@ function App() {
           </div>
           <div>
             <button
-              onClick={() => testApiKey(activeApiKey, settings.provider, settings.provider === "custom" ? settings.custom_api_url : undefined)}
-              disabled={(settings.provider !== "custom" && !activeApiKey) || (settings.provider === "custom" && !settings.custom_api_url) || apiKeyStatus === "testing"}
+              onClick={() => testApiKey(settings.provider, getProviderSettings(settings))}
+              disabled={!canTestProvider || apiKeyStatus === "testing"}
               className="w-full px-3 py-1.5 rounded-lg text-xs font-medium"
               style={{
                 background: apiKeyStatus === "ok" ? "#34c75920" : "var(--border)",
                 color: apiKeyStatus === "ok" ? "#34c759" : "var(--text)",
-                cursor: ((settings.provider !== "custom" && !activeApiKey) || (settings.provider === "custom" && !settings.custom_api_url) || apiKeyStatus === "testing") ? "not-allowed" : "pointer",
-                opacity: ((settings.provider !== "custom" && !activeApiKey) || (settings.provider === "custom" && !settings.custom_api_url) || apiKeyStatus === "testing") ? 0.5 : 1,
+                cursor: (!canTestProvider || apiKeyStatus === "testing") ? "not-allowed" : "pointer",
+                opacity: (!canTestProvider || apiKeyStatus === "testing") ? 0.5 : 1,
               }}
             >
               {apiKeyStatus === "testing" ? "Testing..." : apiKeyStatus === "ok" ? "Connected" : "Test Connection"}

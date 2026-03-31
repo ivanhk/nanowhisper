@@ -130,7 +130,14 @@ impl HistoryManager {
         Ok(entry)
     }
 
-    pub fn update_entry(&self, id: i64, text: &str, model: &str, input_tokens: Option<i64>, output_tokens: Option<i64>) -> Result<()> {
+    pub fn update_entry(
+        &self,
+        id: i64,
+        text: &str,
+        model: &str,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let timestamp = chrono::Utc::now().timestamp();
         conn.execute(

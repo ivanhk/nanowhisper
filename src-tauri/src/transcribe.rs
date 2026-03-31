@@ -38,7 +38,12 @@ pub async fn validate_api_key(client: &reqwest::Client, api_key: &str) -> Result
     Ok(())
 }
 
-pub async fn validate_custom_api_key(client: &reqwest::Client, url: &str, api_key: Option<&str>, model: &str) -> Result<()> {
+pub async fn validate_custom_api_key(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: Option<&str>,
+    model: &str,
+) -> Result<()> {
     let wav = generate_silent_wav();
     let file_part = multipart::Part::bytes(wav)
         .file_name("test.wav")
@@ -53,12 +58,8 @@ pub async fn validate_custom_api_key(client: &reqwest::Client, url: &str, api_ke
             req = req.bearer_auth(key);
         }
     }
-    
-    let resp = req
-        .multipart(form)
-        .send()
-        .await
-        .context("Network error")?;
+
+    let resp = req.multipart(form).send().await.context("Network error")?;
 
     let status = resp.status();
     if status.as_u16() == 401 {
@@ -193,9 +194,11 @@ pub async fn transcribe_custom(
         .context("Missing 'text' field in response")?
         .to_string();
 
-    let input_tokens = json["usage"]["input_tokens"].as_i64()
+    let input_tokens = json["usage"]["input_tokens"]
+        .as_i64()
         .or_else(|| json["usage"]["prompt_tokens"].as_i64());
-    let output_tokens = json["usage"]["output_tokens"].as_i64()
+    let output_tokens = json["usage"]["output_tokens"]
+        .as_i64()
         .or_else(|| json["usage"]["completion_tokens"].as_i64());
 
     Ok(TranscriptionResult {
@@ -234,7 +237,10 @@ pub async fn validate_gemini_api_key(client: &reqwest::Client, api_key: &str) ->
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        if body.contains("API_KEY_INVALID") || body.contains("PERMISSION_DENIED") || status.as_u16() == 401 {
+        if body.contains("API_KEY_INVALID")
+            || body.contains("PERMISSION_DENIED")
+            || status.as_u16() == 401
+        {
             anyhow::bail!("Invalid API key");
         }
         anyhow::bail!("Gemini API error {}: {}", status, body);
@@ -268,7 +274,8 @@ pub async fn transcribe_gemini(
                 lang_name
             )
         }
-        _ => "Transcribe the following audio. Output only the transcribed text, nothing else.".to_string(),
+        _ => "Transcribe the following audio. Output only the transcribed text, nothing else."
+            .to_string(),
     };
 
     let body = serde_json::json!({
@@ -349,7 +356,11 @@ fn language_code_to_name(code: &str) -> &str {
 
 const DASHSCOPE_BASE64_LIMIT: usize = 10 * 1024 * 1024;
 
-pub async fn validate_dashscope_api_key(client: &reqwest::Client, api_key: &str, model: &str) -> Result<()> {
+pub async fn validate_dashscope_api_key(
+    client: &reqwest::Client,
+    api_key: &str,
+    model: &str,
+) -> Result<()> {
     let wav = generate_silent_wav();
     let b64 = base64::engine::general_purpose::STANDARD.encode(&wav);
     let data_uri = format!("data:audio/wav;base64,{}", b64);

@@ -72,21 +72,30 @@ fn macos_cursor_screen_bounds() -> Option<(f64, f64, f64, f64)> {
 
     #[repr(C)]
     #[derive(Copy, Clone)]
-    struct CGPoint { x: f64, y: f64 }
+    struct CGPoint {
+        x: f64,
+        y: f64,
+    }
     unsafe impl Encode for CGPoint {
         const ENCODING: Encoding =
             Encoding::Struct("CGPoint", &[Encoding::Double, Encoding::Double]);
     }
     #[repr(C)]
     #[derive(Copy, Clone)]
-    struct CGSize { width: f64, height: f64 }
+    struct CGSize {
+        width: f64,
+        height: f64,
+    }
     unsafe impl Encode for CGSize {
         const ENCODING: Encoding =
             Encoding::Struct("CGSize", &[Encoding::Double, Encoding::Double]);
     }
     #[repr(C)]
     #[derive(Copy, Clone)]
-    struct CGRect { origin: CGPoint, size: CGSize }
+    struct CGRect {
+        origin: CGPoint,
+        size: CGSize,
+    }
     unsafe impl Encode for CGRect {
         const ENCODING: Encoding =
             Encoding::Struct("CGRect", &[CGPoint::ENCODING, CGSize::ENCODING]);
@@ -96,7 +105,9 @@ fn macos_cursor_screen_bounds() -> Option<(f64, f64, f64, f64)> {
         let mouse: CGPoint = msg_send![AnyClass::get(c"NSEvent")?, mouseLocation];
         let screens: *mut AnyObject = msg_send![AnyClass::get(c"NSScreen")?, screens];
         let count: usize = msg_send![screens, count];
-        if count == 0 { return None; }
+        if count == 0 {
+            return None;
+        }
 
         // Main screen height for Y-axis flip (macOS bottom-left → Tauri top-left)
         let main: *mut AnyObject = msg_send![screens, objectAtIndex: 0usize];
@@ -217,10 +228,9 @@ pub fn run() {
             let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
             let menu = tauri::menu::Menu::with_items(app, &[&show_i, &separator, &quit_i])?;
 
-            let tray_icon = tauri::image::Image::from_bytes(
-                include_bytes!("../icons/tray-icon.png"),
-            )
-            .expect("Failed to load tray icon");
+            let tray_icon =
+                tauri::image::Image::from_bytes(include_bytes!("../icons/tray-icon.png"))
+                    .expect("Failed to load tray icon");
 
             tauri::tray::TrayIconBuilder::new()
                 .icon(tray_icon)
@@ -297,12 +307,12 @@ pub fn run() {
             // Initialize auto-updater
             updater::init(&app_handle);
 
-            log::info!("App started. Provider: {}, Shortcut: {}", settings.provider, settings.shortcut);
-            let active_key_set = match settings.provider.as_str() {
-                "gemini" => !settings.gemini_api_key.is_empty(),
-                "dashscope" => !settings.dashscope_api_key.is_empty(),
-                _ => !settings.api_key.is_empty(),
-            };
+            log::info!(
+                "App started. Provider: {}, Shortcut: {}",
+                settings.provider,
+                settings.shortcut
+            );
+            let active_key_set = !settings.active_provider_settings().api_key.is_empty();
             log::info!("API key configured: {}", active_key_set);
 
             Ok(())
@@ -441,7 +451,10 @@ fn start_recording(app_handle: &tauri::AppHandle) {
     let (pos_x, pos_y) = if let (Some(rx), Some(ry)) = (saved.overlay_rx, saved.overlay_ry) {
         (sx + rx * sw, sy + ry * sh)
     } else {
-        (sx + (sw - OVERLAY_WIDTH) / 2.0, sy + sh - OVERLAY_HEIGHT - OVERLAY_BOTTOM_OFFSET)
+        (
+            sx + (sw - OVERLAY_WIDTH) / 2.0,
+            sy + sh - OVERLAY_HEIGHT - OVERLAY_BOTTOM_OFFSET,
+        )
     };
 
     // Hide main window to prevent it from appearing when overlay activates the app
@@ -496,7 +509,10 @@ fn start_recording(app_handle: &tauri::AppHandle) {
         std::thread::sleep(Duration::from_secs(max_seconds));
         let recorder = handle.state::<Arc<AudioRecorder>>();
         if recorder.is_recording() {
-            log::info!("Max recording time ({}s) reached, auto-stopping", max_seconds);
+            log::info!(
+                "Max recording time ({}s) reached, auto-stopping",
+                max_seconds
+            );
             stop_and_transcribe(&handle);
         }
     });
@@ -558,12 +574,8 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
     let audio_path_str = audio_path.to_string_lossy().to_string();
 
     let settings = settings::get_settings();
-    let active_key = match settings.provider.as_str() {
-        "gemini" => settings.gemini_api_key.clone(),
-        "dashscope" => settings.dashscope_api_key.clone(),
-        "custom" => settings.custom_api_key.clone(),
-        _ => settings.api_key.clone(),
-    };
+    let active_provider = settings.active_provider_settings();
+    let active_key = active_provider.api_key.clone();
     if active_key.is_empty() && settings.provider != "custom" {
         log::error!("API key not configured!");
         close_overlay(app_handle);
@@ -573,7 +585,7 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
         }
         return;
     }
-    if settings.provider == "custom" && settings.custom_api_url.is_empty() {
+    if settings.provider == "custom" && active_provider.api_url.is_empty() {
         log::error!("Custom API URL not configured!");
         close_overlay(app_handle);
         if let Some(w) = app_handle.get_webview_window("main") {
@@ -585,7 +597,7 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
 
     let handle = app_handle.clone();
     let history = history.inner().clone();
-    let model = settings.model.clone();
+    let model = active_provider.model.clone();
     let language = settings.language.clone();
     let http_client = match build_http_client(settings.model_timeout_seconds) {
         Ok(client) => client,
@@ -597,8 +609,8 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
         }
     };
     let provider = settings.provider.clone();
-    let custom_api_url = settings.custom_api_url.clone();
-    let custom_api_key = settings.custom_api_key.clone();
+    let custom_api_url = active_provider.api_url.clone();
+    let custom_api_key = active_provider.api_key.clone();
 
     log::info!("Calling {} API with model={}...", provider, model);
 
@@ -617,22 +629,59 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
 
         let result = match provider.as_str() {
             "gemini" => {
-                transcribe::transcribe_gemini(&http_client, &active_key, &model, wav_data.clone(), lang).await
+                transcribe::transcribe_gemini(
+                    &http_client,
+                    &active_key,
+                    &model,
+                    wav_data.clone(),
+                    lang,
+                )
+                .await
             }
             "dashscope" => {
-                transcribe::transcribe_dashscope(&http_client, &active_key, &model, wav_data.clone(), lang).await
+                transcribe::transcribe_dashscope(
+                    &http_client,
+                    &active_key,
+                    &model,
+                    wav_data.clone(),
+                    lang,
+                )
+                .await
             }
             "custom" => {
-                let api_key = if custom_api_key.is_empty() { None } else { Some(custom_api_key.as_str()) };
-                transcribe::transcribe_custom(&http_client, &custom_api_url, api_key, &model, wav_data.clone(), lang).await
+                let api_key = if custom_api_key.is_empty() {
+                    None
+                } else {
+                    Some(custom_api_key.as_str())
+                };
+                transcribe::transcribe_custom(
+                    &http_client,
+                    &custom_api_url,
+                    api_key,
+                    &model,
+                    wav_data.clone(),
+                    lang,
+                )
+                .await
             }
             _ => {
-                transcribe::transcribe_audio(&http_client, &active_key, &model, wav_data.clone(), lang).await
+                transcribe::transcribe_audio(
+                    &http_client,
+                    &active_key,
+                    &model,
+                    wav_data.clone(),
+                    lang,
+                )
+                .await
             }
         };
 
         match result {
-            Ok(transcribe::TranscriptionResult { text, input_tokens, output_tokens }) => {
+            Ok(transcribe::TranscriptionResult {
+                text,
+                input_tokens,
+                output_tokens,
+            }) => {
                 log::info!("Transcription: {}", text);
 
                 // Copy to clipboard and auto-paste into active app
@@ -650,8 +699,15 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
                 });
 
                 // Save to history
-                let _ = history.add_entry(&text, &model, duration_ms, Some(&audio_path_str), input_tokens, output_tokens);
-                
+                let _ = history.add_entry(
+                    &text,
+                    &model,
+                    duration_ms,
+                    Some(&audio_path_str),
+                    input_tokens,
+                    output_tokens,
+                );
+
                 // Update statistics
                 let _ = history.update_statistics(input_tokens, output_tokens, duration_ms);
             }
@@ -660,7 +716,14 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
 
                 // Save failed entry to history so user can retry
                 let error_text = format!("[Error: {}]", e);
-                let _ = history.add_entry(&error_text, &model, duration_ms, Some(&audio_path_str), None, None);
+                let _ = history.add_entry(
+                    &error_text,
+                    &model,
+                    duration_ms,
+                    Some(&audio_path_str),
+                    None,
+                    None,
+                );
 
                 let _ = handle.emit("transcription-error", e.to_string());
             }

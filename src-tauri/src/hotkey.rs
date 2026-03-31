@@ -124,16 +124,16 @@ mod platform {
                     OTHER_KEY.store(false, Ordering::SeqCst);
                     HOLD_STARTED.store(false, Ordering::SeqCst);
                     TIMER_CANCELED.store(false, Ordering::SeqCst);
-                    
+
                     let delay_ms = get_trigger_delay_ms();
                     schedule_hold_check(delay_ms);
                 }
             } else if KEY_DOWN.swap(false, Ordering::SeqCst) {
                 TIMER_CANCELED.store(true, Ordering::SeqCst);
-                
+
                 let held = now_ms().saturating_sub(KEY_TIME.load(Ordering::SeqCst));
                 let delay_ms = get_trigger_delay_ms();
-                
+
                 if HOLD_STARTED.load(Ordering::SeqCst) {
                     trigger_hold_end();
                 } else if !OTHER_KEY.load(Ordering::SeqCst) && held < delay_ms {
@@ -235,15 +235,15 @@ mod platform {
                     OTHER_KEY.store(false, Ordering::SeqCst);
                     HOLD_STARTED.store(false, Ordering::SeqCst);
                     TIMER_CANCELED.store(false, Ordering::SeqCst);
-                    
+
                     let delay_ms = get_trigger_delay_ms();
                     schedule_hold_check(delay_ms);
                 } else if is_up && KEY_DOWN.swap(false, Ordering::SeqCst) {
                     TIMER_CANCELED.store(true, Ordering::SeqCst);
-                    
+
                     let held = now_ms().saturating_sub(KEY_TIME.load(Ordering::SeqCst));
                     let delay_ms = get_trigger_delay_ms();
-                    
+
                     if HOLD_STARTED.load(Ordering::SeqCst) {
                         trigger_hold_end();
                     } else if !OTHER_KEY.load(Ordering::SeqCst) && held < delay_ms {
@@ -280,12 +280,7 @@ mod platform {
     pub fn start() {
         std::thread::spawn(|| unsafe {
             let hmod = GetModuleHandleW(std::ptr::null());
-            let hook = SetWindowsHookExW(
-                WH_KEYBOARD_LL,
-                Some(hook_proc),
-                hmod,
-                0,
-            );
+            let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), hmod, 0);
             if hook.is_null() {
                 log::error!("Failed to install keyboard hook");
                 return;

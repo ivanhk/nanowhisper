@@ -16,21 +16,31 @@ export interface Statistics {
   count: number;
 }
 
-export interface AppSettings {
-  provider: string;
+export type ProviderId = "openai" | "gemini" | "dashscope" | "custom";
+
+export interface ProviderSettings {
   api_key: string;
-  gemini_api_key: string;
-  dashscope_api_key: string;
-  custom_api_url: string;
-  custom_api_key: string;
+  api_url: string;
   model: string;
+  validated: boolean;
+}
+
+export interface ProviderConfigMap {
+  openai: ProviderSettings;
+  gemini: ProviderSettings;
+  dashscope: ProviderSettings;
+  custom: ProviderSettings;
+}
+
+export interface AppSettings {
+  provider: ProviderId;
+  providers: ProviderConfigMap;
   language: string;
   shortcut: string;
   sound_enabled: boolean;
   overlay_rx: number | null;
   overlay_ry: number | null;
   history_limit: number;
-  api_key_validated: boolean;
   recording_mode: "toggle" | "hold";
   trigger_delay_ms: number;
   max_recording_seconds: number;

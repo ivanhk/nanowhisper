@@ -161,16 +161,12 @@ pub async fn retry_transcription(
     let wav_data = std::fs::read(audio_path).map_err(|e| e.to_string())?;
 
     let settings = crate::settings::get_settings();
-    let active_key = match settings.provider.as_str() {
-        "gemini" => settings.gemini_api_key.clone(),
-        "dashscope" => settings.dashscope_api_key.clone(),
-        "custom" => settings.custom_api_key.clone(),
-        _ => settings.api_key.clone(),
-    };
+    let active_provider = settings.active_provider_settings();
+    let active_key = active_provider.api_key.clone();
     if active_key.is_empty() && settings.provider != "custom" {
         return Err("API key not configured".into());
     }
-    if settings.provider == "custom" && settings.custom_api_url.is_empty() {
+    if settings.provider == "custom" && active_provider.api_url.is_empty() {
         return Err("Custom API URL not configured".into());
     }
 
@@ -183,25 +179,60 @@ pub async fn retry_transcription(
     let client = crate::build_http_client(settings.model_timeout_seconds)?;
 
     let result = match settings.provider.as_str() {
-        "gemini" => transcribe::transcribe_gemini(&client, &active_key, &settings.model, wav_data, lang)
-            .await
-            .map_err(|e| e.to_string())?,
-        "dashscope" => transcribe::transcribe_dashscope(&client, &active_key, &settings.model, wav_data, lang)
-            .await
-            .map_err(|e| e.to_string())?,
+        "gemini" => transcribe::transcribe_gemini(
+            &client,
+            &active_key,
+            &active_provider.model,
+            wav_data,
+            lang,
+        )
+        .await
+        .map_err(|e| e.to_string())?,
+        "dashscope" => transcribe::transcribe_dashscope(
+            &client,
+            &active_key,
+            &active_provider.model,
+            wav_data,
+            lang,
+        )
+        .await
+        .map_err(|e| e.to_string())?,
         "custom" => {
-            let api_key = if settings.custom_api_key.is_empty() { None } else { Some(settings.custom_api_key.as_str()) };
-            transcribe::transcribe_custom(&client, &settings.custom_api_url, api_key, &settings.model, wav_data, lang)
-                .await
-                .map_err(|e| e.to_string())?
-        }
-        _ => transcribe::transcribe_audio(&client, &active_key, &settings.model, wav_data, lang)
+            let api_key = if active_provider.api_key.is_empty() {
+                None
+            } else {
+                Some(active_provider.api_key.as_str())
+            };
+            transcribe::transcribe_custom(
+                &client,
+                &active_provider.api_url,
+                api_key,
+                &active_provider.model,
+                wav_data,
+                lang,
+            )
             .await
-            .map_err(|e| e.to_string())?,
+            .map_err(|e| e.to_string())?
+        }
+        _ => transcribe::transcribe_audio(
+            &client,
+            &active_key,
+            &active_provider.model,
+            wav_data,
+            lang,
+        )
+        .await
+        .map_err(|e| e.to_string())?,
     };
 
     history
-        .update_entry(id, &result.text, &settings.model, result.input_tokens, result.output_tokens)
+        .update_entry(
+            id,
+            &result.text,
+            &active_provider.model,
+            result.input_tokens,
+            result.output_tokens,
+        )
         .map_err(|e| e.to_string())?;
 
     let _ = app.clipboard().write_text(&result.text);

@@ -44,18 +44,42 @@ fn play_tone(freq: f32, duration_ms: u64) -> anyhow::Result<()> {
     let idx = Arc::new(AtomicU32::new(0));
 
     let stream = match supported.sample_format() {
-        cpal::SampleFormat::F32 => {
-            build_tone::<f32>(&device, &supported.into(), freq, total_samples, channels, sample_rate, idx)?
-        }
-        cpal::SampleFormat::I16 => {
-            build_tone::<i16>(&device, &supported.into(), freq, total_samples, channels, sample_rate, idx)?
-        }
-        cpal::SampleFormat::I32 => {
-            build_tone::<i32>(&device, &supported.into(), freq, total_samples, channels, sample_rate, idx)?
-        }
-        cpal::SampleFormat::U16 => {
-            build_tone::<u16>(&device, &supported.into(), freq, total_samples, channels, sample_rate, idx)?
-        }
+        cpal::SampleFormat::F32 => build_tone::<f32>(
+            &device,
+            &supported.into(),
+            freq,
+            total_samples,
+            channels,
+            sample_rate,
+            idx,
+        )?,
+        cpal::SampleFormat::I16 => build_tone::<i16>(
+            &device,
+            &supported.into(),
+            freq,
+            total_samples,
+            channels,
+            sample_rate,
+            idx,
+        )?,
+        cpal::SampleFormat::I32 => build_tone::<i32>(
+            &device,
+            &supported.into(),
+            freq,
+            total_samples,
+            channels,
+            sample_rate,
+            idx,
+        )?,
+        cpal::SampleFormat::U16 => build_tone::<u16>(
+            &device,
+            &supported.into(),
+            freq,
+            total_samples,
+            channels,
+            sample_rate,
+            idx,
+        )?,
         _ => anyhow::bail!("Unsupported output sample format"),
     };
 
