@@ -6,6 +6,7 @@ const PROVIDER_OPENAI: &str = "openai";
 const PROVIDER_GEMINI: &str = "gemini";
 const PROVIDER_DASHSCOPE: &str = "dashscope";
 const PROVIDER_CUSTOM: &str = "custom";
+const PROVIDER_LLAMA_CPP: &str = "llama_cpp";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderSettings {
@@ -23,13 +24,16 @@ impl ProviderSettings {
     fn with_defaults(provider: &str) -> Self {
         Self {
             api_key: String::new(),
-            api_url: String::new(),
+            api_url: default_api_url_for_provider(provider),
             model: default_model_for_provider(provider),
             validated: false,
         }
     }
 
     fn normalize(&mut self, provider: &str) {
+        if self.api_url.is_empty() {
+            self.api_url = default_api_url_for_provider(provider);
+        }
         if self.model.is_empty() {
             self.model = default_model_for_provider(provider);
         }
@@ -46,6 +50,8 @@ pub struct ProviderConfigs {
     pub dashscope: ProviderSettings,
     #[serde(default = "default_custom_provider_settings")]
     pub custom: ProviderSettings,
+    #[serde(default = "default_llama_cpp_provider_settings")]
+    pub llama_cpp: ProviderSettings,
 }
 
 impl Default for ProviderConfigs {
@@ -55,6 +61,7 @@ impl Default for ProviderConfigs {
             gemini: default_gemini_provider_settings(),
             dashscope: default_dashscope_provider_settings(),
             custom: default_custom_provider_settings(),
+            llama_cpp: default_llama_cpp_provider_settings(),
         }
     }
 }
@@ -65,6 +72,7 @@ impl ProviderConfigs {
             PROVIDER_GEMINI => &self.gemini,
             PROVIDER_DASHSCOPE => &self.dashscope,
             PROVIDER_CUSTOM => &self.custom,
+            PROVIDER_LLAMA_CPP => &self.llama_cpp,
             _ => &self.openai,
         }
     }
@@ -74,6 +82,7 @@ impl ProviderConfigs {
             PROVIDER_GEMINI => &mut self.gemini,
             PROVIDER_DASHSCOPE => &mut self.dashscope,
             PROVIDER_CUSTOM => &mut self.custom,
+            PROVIDER_LLAMA_CPP => &mut self.llama_cpp,
             _ => &mut self.openai,
         }
     }
@@ -83,6 +92,7 @@ impl ProviderConfigs {
         self.gemini.normalize(PROVIDER_GEMINI);
         self.dashscope.normalize(PROVIDER_DASHSCOPE);
         self.custom.normalize(PROVIDER_CUSTOM);
+        self.llama_cpp.normalize(PROVIDER_LLAMA_CPP);
     }
 }
 
@@ -167,7 +177,15 @@ fn default_model_for_provider(provider: &str) -> String {
         PROVIDER_GEMINI => "gemini-3-flash-preview".to_string(),
         PROVIDER_DASHSCOPE => "qwen3-asr-flash".to_string(),
         PROVIDER_CUSTOM => "whisper-1".to_string(),
+        PROVIDER_LLAMA_CPP => "Qwen3-ASR-1.7B-GGUF".to_string(),
         _ => "gpt-4o-transcribe".to_string(),
+    }
+}
+
+fn default_api_url_for_provider(provider: &str) -> String {
+    match provider {
+        PROVIDER_LLAMA_CPP => "http://127.0.0.1:8080/v1/audio/transcriptions".to_string(),
+        _ => String::new(),
     }
 }
 
@@ -185,6 +203,10 @@ fn default_dashscope_provider_settings() -> ProviderSettings {
 
 fn default_custom_provider_settings() -> ProviderSettings {
     ProviderSettings::with_defaults(PROVIDER_CUSTOM)
+}
+
+fn default_llama_cpp_provider_settings() -> ProviderSettings {
+    ProviderSettings::with_defaults(PROVIDER_LLAMA_CPP)
 }
 
 fn default_language() -> String {
@@ -254,7 +276,11 @@ impl AppSettings {
     fn normalize(&mut self) {
         if !matches!(
             self.provider.as_str(),
-            PROVIDER_OPENAI | PROVIDER_GEMINI | PROVIDER_DASHSCOPE | PROVIDER_CUSTOM
+            PROVIDER_OPENAI
+                | PROVIDER_GEMINI
+                | PROVIDER_DASHSCOPE
+                | PROVIDER_CUSTOM
+                | PROVIDER_LLAMA_CPP
         ) {
             self.provider = default_provider();
         }
@@ -292,6 +318,7 @@ impl LegacyAppSettings {
                     model: default_model_for_provider(PROVIDER_CUSTOM),
                     validated: false,
                 },
+                llama_cpp: default_llama_cpp_provider_settings(),
             },
             language: self.language,
             shortcut: self.shortcut,
@@ -354,5 +381,36 @@ pub fn save_settings(settings: &AppSettings) {
     normalized.normalize();
     if let Ok(json) = serde_json::to_string_pretty(&normalized) {
         let _ = std::fs::write(&path, json);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_settings_preserves_llama_cpp_provider_and_defaults() {
+        let settings = parse_settings(
+            r#"{
+                "provider": "llama_cpp",
+                "providers": {
+                    "openai": {"api_key": "", "api_url": "", "model": "gpt-4o-transcribe", "validated": false},
+                    "gemini": {"api_key": "", "api_url": "", "model": "gemini-3-flash-preview", "validated": false},
+                    "dashscope": {"api_key": "", "api_url": "", "model": "qwen3-asr-flash", "validated": false},
+                    "custom": {"api_key": "", "api_url": "", "model": "whisper-1", "validated": false},
+                    "llama_cpp": {"api_key": "", "api_url": "", "model": "", "validated": false}
+                }
+            }"#,
+        );
+
+        assert_eq!(settings.provider, "llama_cpp");
+        assert_eq!(
+            settings.providers.get("llama_cpp").api_url,
+            "http://127.0.0.1:8080/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            settings.providers.get("llama_cpp").model,
+            "Qwen3-ASR-1.7B-GGUF"
+        );
     }
 }

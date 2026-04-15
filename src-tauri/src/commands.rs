@@ -1,4 +1,5 @@
 use crate::history::{HistoryEntry, HistoryManager, Statistics};
+use crate::llama_cpp::LlamaCppProbeResult;
 use crate::paste::EnigoState;
 use crate::recorder::AudioRecorder;
 use crate::settings::{self, AppSettings};
@@ -89,16 +90,38 @@ pub async fn validate_api_key(
         "dashscope" => crate::transcribe::validate_dashscope_api_key(&client, &api_key, &model)
             .await
             .map_err(|e| e.to_string()),
-        "custom" => {
+        "custom" | "llama_cpp" => {
             let url = custom_url.ok_or("Custom URL is required")?;
-            crate::transcribe::validate_custom_api_key(&client, &url, Some(&api_key), &model)
+            let auth = if api_key.is_empty() {
+                None
+            } else {
+                Some(api_key.as_str())
+            };
+            crate::transcribe::validate_custom_api_key(&client, &url, auth, &model)
                 .await
-                .map_err(|e| e.to_string())
+                .map_err(|e| {
+                    if provider == "llama_cpp" {
+                        crate::llama_cpp::map_error_message(&e.to_string())
+                    } else {
+                        e.to_string()
+                    }
+                })
         }
         _ => crate::transcribe::validate_api_key(&client, &api_key)
             .await
             .map_err(|e| e.to_string()),
     }
+}
+
+#[tauri::command]
+pub async fn probe_llama_cpp_endpoint(
+    url: String,
+    api_key: Option<String>,
+) -> Result<LlamaCppProbeResult, String> {
+    let timeout_seconds = settings::get_settings().model_timeout_seconds;
+    let client = crate::build_http_client(timeout_seconds)?;
+    let probe = crate::llama_cpp::probe_endpoint(&client, &url, api_key.as_deref()).await;
+    Ok(probe)
 }
 
 #[tauri::command]
@@ -163,10 +186,11 @@ pub async fn retry_transcription(
     let settings = crate::settings::get_settings();
     let active_provider = settings.active_provider_settings();
     let active_key = active_provider.api_key.clone();
-    if active_key.is_empty() && settings.provider != "custom" {
+    if active_key.is_empty() && !matches!(settings.provider.as_str(), "custom" | "llama_cpp") {
         return Err("API key not configured".into());
     }
-    if settings.provider == "custom" && active_provider.api_url.is_empty() {
+    if matches!(settings.provider.as_str(), "custom" | "llama_cpp") && active_provider.api_url.is_empty()
+    {
         return Err("Custom API URL not configured".into());
     }
 
@@ -212,7 +236,28 @@ pub async fn retry_transcription(
                 lang,
             )
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| {
+                e.to_string()
+            })?
+        }
+        "llama_cpp" => {
+            let api_key = if active_provider.api_key.is_empty() {
+                None
+            } else {
+                Some(active_provider.api_key.as_str())
+            };
+            transcribe::transcribe_llama_cpp(
+                &client,
+                &active_provider.api_url,
+                api_key,
+                &active_provider.model,
+                wav_data,
+                lang,
+            )
+            .await
+            .map_err(|e| {
+                crate::llama_cpp::map_error_message(&e.to_string())
+            })?
         }
         _ => transcribe::transcribe_audio(
             &client,

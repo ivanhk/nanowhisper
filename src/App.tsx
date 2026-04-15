@@ -8,6 +8,7 @@ import type {
   Statistics,
   ProviderId,
   ProviderSettings,
+  LlamaCppProbeResult,
 } from "./types";
 import logoUrl from "./assets/logo.png";
 
@@ -35,6 +36,7 @@ const DEFAULT_MODELS: Record<ProviderId, string> = {
   gemini: "gemini-3-flash-preview",
   dashscope: "qwen3-asr-flash",
   custom: "whisper-1",
+  llama_cpp: "Qwen3-ASR-1.7B-GGUF",
 };
 
 function getProviderSettings(settings: AppSettings, provider: ProviderId = settings.provider): ProviderSettings {
@@ -69,9 +71,60 @@ function getModelOptions(provider: ProviderId) {
   }
 }
 
+function isCustomEndpointProvider(provider: ProviderId): boolean {
+  return provider === "custom" || provider === "llama_cpp";
+}
+
+function usesTextModelInput(provider: ProviderId): boolean {
+  return provider === "custom" || provider === "dashscope" || provider === "llama_cpp";
+}
+
 function hasRequiredProviderConfig(settings: AppSettings, provider: ProviderId = settings.provider): boolean {
   const config = getProviderSettings(settings, provider);
-  return provider === "custom" ? Boolean(config.api_url.trim()) : Boolean(config.api_key.trim());
+  return isCustomEndpointProvider(provider) ? Boolean(config.api_url.trim()) : Boolean(config.api_key.trim());
+}
+
+function LlamaCppProbeCard({ probe, pending }: { probe: LlamaCppProbeResult | null; pending: boolean }) {
+  if (pending) {
+    return (
+      <div className="mt-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}>
+        Checking llama.cpp capabilities via /props and /models...
+      </div>
+    );
+  }
+
+  if (!probe) {
+    return (
+      <p className="text-xs mt-2" style={{ color: "var(--text-secondary)" }}>
+        NanoWhisper will probe /props and /models on this server to confirm audio capability.
+      </p>
+    );
+  }
+
+  const tone = !probe.reachable
+    ? "#ff453a"
+    : probe.audio_capable === true
+      ? "#34c759"
+      : "#ff9f0a";
+  const summary = !probe.reachable
+    ? "Server unreachable"
+    : probe.audio_capable === true
+      ? "Audio capability detected"
+      : probe.audio_capable === false
+        ? "Audio capability missing"
+        : "Server reachable, audio unverified";
+
+  return (
+    <div className="mt-2 px-3 py-2 rounded-lg text-xs space-y-1" style={{ background: "var(--card)", border: `1px solid ${tone}33`, color: "var(--text)" }}>
+      <p style={{ color: tone }}>{summary}</p>
+      {probe.detected_model && (
+        <p style={{ color: "var(--text-secondary)" }}>Detected model: {probe.detected_model}</p>
+      )}
+      {probe.warning && (
+        <p style={{ color: probe.reachable ? "var(--text-secondary)" : tone }}>{probe.warning}</p>
+      )}
+    </div>
+  );
 }
 
 function displayShortcut(s: string): string {
@@ -200,6 +253,8 @@ function App() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [apiKeyStatus, setApiKeyStatus] = useState<"untested" | "testing" | "ok" | "error">("untested");
   const [apiKeyError, setApiKeyError] = useState<string | null>(null);
+  const [llamaCppProbe, setLlamaCppProbe] = useState<LlamaCppProbeResult | null>(null);
+  const [llamaCppProbePending, setLlamaCppProbePending] = useState(false);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [updateBlocked, setUpdateBlocked] = useState(false);
 
@@ -221,6 +276,35 @@ function App() {
     }
     setApiKeyStatus(getProviderSettings(s).validated ? "ok" : "untested");
     setApiKeyError(null);
+  }, []);
+
+  const probeLlamaCpp = useCallback(async (url: string, apiKey?: string) => {
+    const trimmedUrl = url.trim();
+    if (!trimmedUrl) {
+      setLlamaCppProbe(null);
+      return null;
+    }
+
+    setLlamaCppProbePending(true);
+    try {
+      const result = await invoke<LlamaCppProbeResult>("probe_llama_cpp_endpoint", {
+        url: trimmedUrl,
+        apiKey: apiKey?.trim() ? apiKey : undefined,
+      });
+      setLlamaCppProbe(result);
+      return result;
+    } catch (error) {
+      const fallback = {
+        reachable: false,
+        audio_capable: null,
+        detected_model: null,
+        warning: String(error),
+      };
+      setLlamaCppProbe(fallback);
+      return fallback;
+    } finally {
+      setLlamaCppProbePending(false);
+    }
   }, []);
 
   const updateCurrentProviderSettings = useCallback(
@@ -256,21 +340,28 @@ function App() {
     });
     setApiKeyStatus(nextStatus);
     setApiKeyError(null);
+    if (provider !== "llama_cpp") {
+      setLlamaCppProbe(null);
+      setLlamaCppProbePending(false);
+    }
   }, []);
 
   const testApiKey = useCallback(async (
     provider: ProviderId,
     config: ProviderSettings,
   ) => {
-    if (!config.api_key && provider !== "custom") return;
-    if (provider === "custom" && !config.api_url) return;
+    if (!isCustomEndpointProvider(provider) && !config.api_key) return;
+    if (isCustomEndpointProvider(provider) && !config.api_url.trim()) return;
     setApiKeyStatus("testing");
     setApiKeyError(null);
     try {
+      if (provider === "llama_cpp") {
+        await probeLlamaCpp(config.api_url, config.api_key);
+      }
       await invoke("validate_api_key", {
         apiKey: config.api_key,
         provider,
-        customUrl: provider === "custom" ? config.api_url : undefined,
+        customUrl: isCustomEndpointProvider(provider) ? config.api_url : undefined,
         model: config.model,
       });
       setApiKeyStatus("ok");
@@ -286,7 +377,7 @@ function App() {
       setApiKeyStatus("error");
       setApiKeyError(String(e));
     }
-  }, []);
+  }, [probeLlamaCpp]);
 
   const checkPermissions = useCallback(async () => {
     const [mic, acc] = await Promise.all([
@@ -352,6 +443,33 @@ function App() {
       console.error("Failed to initialize auto-paste:", error);
     });
   }, [accessibilityOk]);
+
+  useEffect(() => {
+    if (!settings) return;
+    if (settings.provider !== "llama_cpp") {
+      setLlamaCppProbe(null);
+      setLlamaCppProbePending(false);
+      return;
+    }
+
+    const config = settings.providers.llama_cpp;
+    if (!config.api_url.trim()) {
+      setLlamaCppProbe(null);
+      setLlamaCppProbePending(false);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      probeLlamaCpp(config.api_url, config.api_key);
+    }, 400);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    probeLlamaCpp,
+    settings?.provider,
+    settings?.providers.llama_cpp.api_key,
+    settings?.providers.llama_cpp.api_url,
+  ]);
 
   const handleEnableMicrophone = useCallback(async () => {
     await invoke("request_microphone");
@@ -473,8 +591,9 @@ function App() {
               <option value="gemini">Gemini</option>
               <option value="dashscope">DashScope</option>
               <option value="custom">Custom (Whisper API)</option>
+              <option value="llama_cpp">Custom (llama.cpp)</option>
             </select>
-            {settings.provider === "custom" ? (
+            {isCustomEndpointProvider(settings.provider) ? (
               <>
                 <input
                   type="url"
@@ -482,7 +601,7 @@ function App() {
                   onChange={(e) => {
                     updateCurrentProviderSettings({ api_url: e.target.value }, { resetValidation: true });
                   }}
-                  placeholder="https://api.example.com/v1/audio/transcriptions"
+                  placeholder={settings.provider === "llama_cpp" ? "http://127.0.0.1:8080/v1/audio/transcriptions" : "https://api.example.com/v1/audio/transcriptions"}
                   className="w-full px-3 py-2 rounded-lg text-sm outline-none mb-2"
                   style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
                 />
@@ -492,10 +611,18 @@ function App() {
                   onChange={(e) => {
                     updateCurrentProviderSettings({ api_key: e.target.value }, { resetValidation: true });
                   }}
-                  placeholder="API Key (optional for local services)"
+                  placeholder={settings.provider === "llama_cpp" ? "Optional for authenticated llama-server" : "API Key (optional for local services)"}
                   className="w-full px-3 py-2 rounded-lg text-sm outline-none"
                   style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
                 />
+                {settings.provider === "llama_cpp" && (
+                  <>
+                    <p className="text-xs mt-2" style={{ color: "var(--text-secondary)" }}>
+                      Use the full llama-server transcription endpoint. NanoWhisper will also probe /props and /models on the same server.
+                    </p>
+                    <LlamaCppProbeCard probe={llamaCppProbe} pending={llamaCppProbePending} />
+                  </>
+                )}
               </>
             ) : settings.provider === "gemini" ? (
               <input
@@ -533,7 +660,7 @@ function App() {
             )}
             <div className="mt-2">
               <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Model</label>
-              {settings.provider === "custom" || settings.provider === "dashscope" ? (
+              {usesTextModelInput(settings.provider) ? (
                 <input
                   type="text"
                   value={activeModel}
@@ -666,22 +793,31 @@ function App() {
               <option value="gemini">Gemini</option>
               <option value="dashscope">DashScope</option>
               <option value="custom">Custom (Whisper API)</option>
+              <option value="llama_cpp">Custom (llama.cpp)</option>
             </select>
           </div>
-          {settings.provider === "custom" ? (
+          {isCustomEndpointProvider(settings.provider) ? (
             <>
               <div>
                 <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Endpoint URL</label>
                 <input type="url" value={activeApiUrl} onChange={(e) => {
                   updateCurrentProviderSettings({ api_url: e.target.value }, { resetValidation: true });
-                }} placeholder="https://api.example.com/v1/audio/transcriptions" className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
+                }} placeholder={settings.provider === "llama_cpp" ? "http://127.0.0.1:8080/v1/audio/transcriptions" : "https://api.example.com/v1/audio/transcriptions"} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
               </div>
               <div>
                 <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>API Key (optional)</label>
                 <input type="password" value={activeApiKey} onChange={(e) => {
                   updateCurrentProviderSettings({ api_key: e.target.value }, { resetValidation: true });
-                }} placeholder="Optional for local services" className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
+                }} placeholder={settings.provider === "llama_cpp" ? "Optional for authenticated llama-server" : "Optional for local services"} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
               </div>
+              {settings.provider === "llama_cpp" && (
+                <>
+                  <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                    Use the full llama-server transcription endpoint. NanoWhisper will probe /props and /models without blocking usage.
+                  </p>
+                  <LlamaCppProbeCard probe={llamaCppProbe} pending={llamaCppProbePending} />
+                </>
+              )}
             </>
           ) : (
             <div>
@@ -705,7 +841,7 @@ function App() {
           )}
           <div>
             <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Model</label>
-            {settings.provider === "custom" || settings.provider === "dashscope" ? (
+            {usesTextModelInput(settings.provider) ? (
               <input type="text" value={activeModel} onChange={(e) => updateCurrentProviderSettings({ model: e.target.value }, { resetValidation: true })} placeholder={DEFAULT_MODELS[settings.provider as ProviderId]} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
             ) : (
               <select value={activeModel} onChange={(e) => updateCurrentProviderSettings({ model: e.target.value }, { resetValidation: true })} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}>

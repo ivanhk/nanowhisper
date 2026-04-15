@@ -16,7 +16,7 @@ export interface Statistics {
   count: number;
 }
 
-export type ProviderId = "openai" | "gemini" | "dashscope" | "custom";
+export type ProviderId = "openai" | "gemini" | "dashscope" | "custom" | "llama_cpp";
 
 export interface ProviderSettings {
   api_key: string;
@@ -30,6 +30,14 @@ export interface ProviderConfigMap {
   gemini: ProviderSettings;
   dashscope: ProviderSettings;
   custom: ProviderSettings;
+  llama_cpp: ProviderSettings;
+}
+
+export interface LlamaCppProbeResult {
+  reachable: boolean;
+  audio_capable: boolean | null;
+  detected_model: string | null;
+  warning: string | null;
 }
 
 export interface AppSettings {

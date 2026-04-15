@@ -1,6 +1,7 @@
 mod commands;
 mod history;
 mod hotkey;
+mod llama_cpp;
 pub mod paste;
 mod permissions;
 mod recorder;
@@ -179,6 +180,7 @@ pub fn run() {
             commands::request_microphone,
             commands::initialize_enigo,
             commands::validate_api_key,
+            commands::probe_llama_cpp_endpoint,
             commands::retry_transcription,
             commands::save_overlay_position,
             commands::pause_shortcut,
@@ -580,7 +582,7 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
     let settings = settings::get_settings();
     let active_provider = settings.active_provider_settings();
     let active_key = active_provider.api_key.clone();
-    if active_key.is_empty() && settings.provider != "custom" {
+    if active_key.is_empty() && !matches!(settings.provider.as_str(), "custom" | "llama_cpp") {
         log::error!("API key not configured!");
         close_overlay(app_handle);
         if let Some(w) = app_handle.get_webview_window("main") {
@@ -589,7 +591,8 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
         }
         return;
     }
-    if settings.provider == "custom" && active_provider.api_url.is_empty() {
+    if matches!(settings.provider.as_str(), "custom" | "llama_cpp") && active_provider.api_url.is_empty()
+    {
         log::error!("Custom API URL not configured!");
         close_overlay(app_handle);
         if let Some(w) = app_handle.get_webview_window("main") {
@@ -668,6 +671,22 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
                 )
                 .await
             }
+            "llama_cpp" => {
+                let api_key = if custom_api_key.is_empty() {
+                    None
+                } else {
+                    Some(custom_api_key.as_str())
+                };
+                transcribe::transcribe_llama_cpp(
+                    &http_client,
+                    &custom_api_url,
+                    api_key,
+                    &model,
+                    wav_data.clone(),
+                    lang,
+                )
+                .await
+            }
             _ => {
                 transcribe::transcribe_audio(
                     &http_client,
@@ -716,10 +735,15 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
                 let _ = history.update_statistics(input_tokens, output_tokens, duration_ms);
             }
             Err(e) => {
+                let error_message = if provider == "llama_cpp" {
+                    llama_cpp::map_error_message(&e.to_string())
+                } else {
+                    e.to_string()
+                };
                 log::error!("Transcription failed: {}", e);
 
                 // Save failed entry to history so user can retry
-                let error_text = format!("[Error: {}]", e);
+                let error_text = format!("[Error: {}]", error_message);
                 let _ = history.add_entry(
                     &error_text,
                     &model,
@@ -729,7 +753,7 @@ fn stop_and_transcribe(app_handle: &tauri::AppHandle) {
                     None,
                 );
 
-                let _ = handle.emit("transcription-error", e.to_string());
+                let _ = handle.emit("transcription-error", error_message);
             }
         }
 
