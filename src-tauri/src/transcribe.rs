@@ -113,7 +113,12 @@ pub async fn transcribe_audio(
 
     if let Some(lang) = language {
         if lang != "auto" {
-            form = form.text("language", lang.to_string());
+            // OpenAI only accepts ISO 639-1 codes; map zh-Hans/zh-Hant to zh
+            let code = match lang {
+                "zh-Hans" | "zh-Hant" => "zh",
+                other => other,
+            };
+            form = form.text("language", code.to_string());
         }
     }
 
@@ -210,7 +215,7 @@ pub async fn transcribe_custom(
 
 // ── Google Gemini (generateContent) ─────────────────────────────────
 
-const GEMINI_INLINE_LIMIT: usize = 20 * 1024 * 1024; // 20 MB
+const GEMINI_INLINE_LIMIT: usize = 100 * 1024 * 1024; // 100 MB (raised from 20 MB, 2026-01-08)
 
 /// Validate Gemini API key by sending a tiny silent WAV.
 pub async fn validate_gemini_api_key(client: &reqwest::Client, api_key: &str) -> Result<()> {
@@ -259,7 +264,7 @@ pub async fn transcribe_gemini(
     let estimated_b64_size = (wav_data.len() * 4 + 2) / 3;
     if estimated_b64_size > GEMINI_INLINE_LIMIT {
         anyhow::bail!(
-            "Audio file too large for Gemini ({:.1} MB). Maximum is ~15 MB WAV.",
+            "Audio file too large for Gemini ({:.1} MB). Maximum is ~75 MB WAV.",
             wav_data.len() as f64 / 1_048_576.0
         );
     }
@@ -342,6 +347,8 @@ pub async fn transcribe_gemini(
 fn language_code_to_name(code: &str) -> &str {
     match code {
         "zh" => "Chinese",
+        "zh-Hans" => "Simplified Chinese",
+        "zh-Hant" => "Traditional Chinese",
         "en" => "English",
         "ja" => "Japanese",
         "ko" => "Korean",
