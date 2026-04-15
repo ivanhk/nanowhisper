@@ -533,12 +533,12 @@ function App() {
             )}
             <div className="mt-2">
               <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Model</label>
-              {settings.provider === "custom" ? (
+              {settings.provider === "custom" || settings.provider === "dashscope" ? (
                 <input
                   type="text"
                   value={activeModel}
                   onChange={(e) => updateCurrentProviderSettings({ model: e.target.value }, { resetValidation: true })}
-                  placeholder={DEFAULT_MODELS.custom}
+                  placeholder={DEFAULT_MODELS[settings.provider as ProviderId]}
                   className="w-full px-3 py-2 rounded-lg text-sm outline-none"
                   style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}
                 />
@@ -705,8 +705,8 @@ function App() {
           )}
           <div>
             <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Model</label>
-            {settings.provider === "custom" ? (
-              <input type="text" value={activeModel} onChange={(e) => updateCurrentProviderSettings({ model: e.target.value }, { resetValidation: true })} placeholder={DEFAULT_MODELS.custom} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
+            {settings.provider === "custom" || settings.provider === "dashscope" ? (
+              <input type="text" value={activeModel} onChange={(e) => updateCurrentProviderSettings({ model: e.target.value }, { resetValidation: true })} placeholder={DEFAULT_MODELS[settings.provider as ProviderId]} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }} />
             ) : (
               <select value={activeModel} onChange={(e) => updateCurrentProviderSettings({ model: e.target.value }, { resetValidation: true })} className="w-full px-3 py-2 rounded-lg text-sm outline-none" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)" }}>
                 {getModelOptions(settings.provider).map((m) => (
